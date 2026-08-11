@@ -1,9 +1,9 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
+*.pyc
 
-# Virtual environment
+# Virtual Environment
 venv/
 .env
 
@@ -13,17 +13,13 @@ venv/
 # VS Code
 .vscode/
 
-# OS files
-.DS_Store
-Thumbs.db
-
 # Coverage
 .coverage
 htmlcov/
 
 # Logs
 *.log
- 
-# Python bytecode
-**/__pycache__/
-*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
