@@ -1,19 +1,11 @@
 from typing import Any
 
+from strategy.decision_engine import make_decision
+
 
 class StrategyEngine:
     """
-    Coordinates the complete trading strategy.
-
-    Pipeline:
-
-        Liquidity
-            -> Market Structure
-            -> BOS / CHOCH
-            -> Volume
-            -> Open Interest
-            -> Funding
-            -> Decision Engine
+    Main strategy entry point.
     """
 
     def analyze(
@@ -22,17 +14,44 @@ class StrategyEngine:
         visible_history: list[dict[str, Any]],
         market_snapshot: dict[str, Any],
     ) -> dict[str, Any]:
-        """
-        Placeholder.
 
-        In the next step this method will run the
-        complete strategy pipeline.
+        funding_rate = 0.0
 
-        For now it behaves exactly like the old
-        strategy callback.
-        """
+        funding = market_snapshot.get("funding", {}).get("current")
 
-        return {
-            "decision": "IGNORE",
-            "score": 0.0,
-        }
+        if funding is not None:
+            funding_rate = float(funding.get("lastFundingRate", 0.0))
+
+        return make_decision(
+            signal="bullish_order_block",
+            liquidity_sweep="BULLISH_SWEEP",
+            liquidity_strength=2.0,
+            market_structure="BULLISH",
+            bos_quality={
+                "bos": "BULLISH_BOS",
+                "quality": "STRONG",
+            },
+            choch="NO_CHOCH",
+            volume_ratio=2.0,
+            open_interest_change=2.0,
+            funding_rate=funding_rate,
+        )
+
+
+engine = StrategyEngine()
+
+
+def strategy_callback(
+    current_candle: dict[str, Any],
+    visible_history: list[dict[str, Any]],
+    market_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Callback expected by BacktestRunner.
+    """
+
+    return engine.analyze(
+        current_candle=current_candle,
+        visible_history=visible_history,
+        market_snapshot=market_snapshot,
+    )
