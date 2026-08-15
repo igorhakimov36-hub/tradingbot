@@ -1,11 +1,16 @@
-def calculate_volume_score(volume_ratio: float):
+def calculate_volume_score(
+    volume_ratio: float,
+    signal: str,
+):
+    score = 0
+
     if volume_ratio >= 3.0:
-        return 25
+        score = 25
 
     elif volume_ratio >= 2.0:
-        return 20
+        score = 20
 
     elif volume_ratio >= 1.3:
-        return 10
+        score = 10
 
-    return 0
+    return score

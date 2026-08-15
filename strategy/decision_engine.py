@@ -84,13 +84,21 @@ def make_decision(
     # Other Scores
     # -------------------------
 
-    volume_score = calculate_volume_score(volume_ratio)
-
-    open_interest_score = calculate_open_interest_score(
-        open_interest_change
+    volume_score = calculate_volume_score(
+        volume_ratio,
+        signal,
     )
 
-    funding_score = calculate_funding_score(funding_rate)
+    open_interest_score = calculate_open_interest_score(
+        open_interest_change,
+           signal,
+    )
+
+
+    funding_score = calculate_funding_score(
+        funding_rate,
+        signal,
+    )
 
 
     # -------------------------

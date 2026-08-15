@@ -23,3 +23,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Historical data
+data/*.csv
+data/*.zip

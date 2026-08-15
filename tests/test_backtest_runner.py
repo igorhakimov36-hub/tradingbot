@@ -181,15 +181,9 @@ def test_runner_aligns_latest_available_oi():
         callback=callback,
     )
 
-    assert (
-        snapshots[0]["open_interest"]["open_interest"]
-        == 1100.0
-    )
+    assert snapshots[0]["open_interest"]["open_interest"] == 1100.0
 
-    assert (
-        snapshots[1]["open_interest"]["open_interest"]
-        == 1100.0
-    )
+    assert snapshots[1]["open_interest"]["open_interest"] == 1100.0
 
 
 def test_runner_never_uses_future_oi():
@@ -261,10 +255,7 @@ def test_runner_snapshot_matches_current_candle():
     checked = []
 
     def callback(current_candle, visible_history, market_snapshot):
-        checked.append(
-            market_snapshot["timestamp"]
-            == current_candle["timestamp"]
-        )
+        checked.append(market_snapshot["timestamp"] == current_candle["timestamp"])
 
     runner.run(
         window_name="VALIDATION",
@@ -292,10 +283,12 @@ def test_runner_can_run_held_out_separately():
 
     assert processed == [104.0]
 
-
     # =========================================================
+
+
 # FULL STRATEGY INTEGRATION
 # =========================================================
+
 
 def test_run_strategy_records_ignore():
     runner = BacktestRunner(
@@ -319,10 +312,7 @@ def test_run_strategy_records_ignore():
         visible_history,
         market_snapshot,
     ):
-        raise AssertionError(
-            "trade_setup_callback must not "
-            "run for IGNORE"
-        )
+        raise AssertionError("trade_setup_callback must not " "run for IGNORE")
 
     result = runner.run_strategy(
         window_name="VALIDATION",
@@ -330,17 +320,11 @@ def test_run_strategy_records_ignore():
         trade_setup_callback=trade_setup_callback,
     )
 
-    assert len(
-        result.journal.by_event("SIGNAL")
-    ) == 2
+    assert len(result.journal.by_event("SIGNAL")) == 2
 
-    assert len(
-        result.journal.ignored_signals()
-    ) == 2
+    assert len(result.journal.ignored_signals()) == 2
 
-    assert len(
-        result.journal.closed_trades()
-    ) == 0
+    assert len(result.journal.closed_trades()) == 0
 
     assert result.performance.total_trades == 0
     assert result.performance.total_net_pnl == 0.0
@@ -373,20 +357,20 @@ def test_run_strategy_opens_long_trade():
             "score": 40.0,
         }
 
-def trade_setup_callback(
-       decision,
-       current_candle,
-       visible_history,
-       market_snapshot,
-       current_equity,
-):
-    return create_trade_setup(
-        side="LONG",
-        entry_price=102.0,
-        stop_loss=100.0,
-        take_profit=120.0,
-        quantity=1.0,
-    )
+    def trade_setup_callback(
+        decision,
+        current_candle,
+        visible_history,
+        market_snapshot,
+        current_equity,
+    ):
+        return create_trade_setup(
+            side="LONG",
+            entry_price=102.0,
+            stop_loss=100.0,
+            take_profit=120.0,
+            quantity=1.0,
+        )
 
     result = runner.run_strategy(
         window_name="VALIDATION",
@@ -394,9 +378,7 @@ def trade_setup_callback(
         trade_setup_callback=trade_setup_callback,
     )
 
-    opened = result.journal.by_event(
-        "OPENED"
-    )
+    opened = result.journal.by_event("OPENED")
 
     assert len(opened) == 1
     assert opened[0].side == "LONG"
@@ -432,20 +414,20 @@ def test_run_strategy_long_stop_loss_flows_to_performance():
             "score": 40.0,
         }
 
-def trade_setup_callback(
-       decision,
-       current_candle,
-       visible_history,
-       market_snapshot,
-       current_equity,
-):
-    return create_trade_setup(
-        side="LONG",
-        entry_price=102.0,
-        stop_loss=100.0,
-        take_profit=120.0,
-        quantity=1.0,
-    )
+    def trade_setup_callback(
+        decision,
+        current_candle,
+        visible_history,
+        market_snapshot,
+        current_equity,
+    ):
+        return create_trade_setup(
+            side="LONG",
+            entry_price=102.0,
+            stop_loss=100.0,
+            take_profit=120.0,
+            quantity=1.0,
+        )
 
     result = runner.run_strategy(
         window_name="VALIDATION",
@@ -517,7 +499,7 @@ def test_run_strategy_long_take_profit_flows_to_performance():
         market_snapshot,
         current_equity,
     ):
-    
+
         return create_trade_setup(
             side="LONG",
             entry_price=100.0,
@@ -603,9 +585,7 @@ def test_run_strategy_rejects_invalid_decision():
         visible_history,
         market_snapshot,
     ):
-        raise AssertionError(
-            "trade setup must not be created"
-        )
+        raise AssertionError("trade setup must not be created")
 
     with pytest.raises(ValueError):
         runner.run_strategy(
@@ -634,9 +614,7 @@ def test_run_strategy_requires_strategy_dictionary():
         visible_history,
         market_snapshot,
     ):
-        raise AssertionError(
-            "trade setup must not be created"
-        )
+        raise AssertionError("trade setup must not be created")
 
     with pytest.raises(TypeError):
         runner.run_strategy(
@@ -673,11 +651,7 @@ def test_run_strategy_preserves_point_in_time_snapshot():
     ):
         oi = market_snapshot["open_interest"]
 
-        observed_oi.append(
-            None
-            if oi is None
-            else oi["open_interest"]
-        )
+        observed_oi.append(None if oi is None else oi["open_interest"])
 
         return {
             "decision": "IGNORE",
@@ -690,9 +664,7 @@ def test_run_strategy_preserves_point_in_time_snapshot():
         visible_history,
         market_snapshot,
     ):
-        raise AssertionError(
-            "trade setup must not run"
-        )
+        raise AssertionError("trade setup must not run")
 
     runner.run_strategy(
         window_name="VALIDATION",
@@ -704,6 +676,7 @@ def test_run_strategy_preserves_point_in_time_snapshot():
         1000.0,
         1000.0,
     ]
+
 
 def test_run_strategy_uses_current_equity_for_risk_based_position_size():
     runner = BacktestRunner(
@@ -742,9 +715,7 @@ def test_run_strategy_uses_current_equity_for_risk_based_position_size():
             risk_percent=1.0,
         )
 
-        observed_quantity.append(
-            setup.quantity
-        )
+        observed_quantity.append(setup.quantity)
 
         return setup
 
@@ -755,13 +726,9 @@ def test_run_strategy_uses_current_equity_for_risk_based_position_size():
         initial_equity=300.0,
     )
 
-    assert observed_equity[0] == pytest.approx(
-        300.0
-    )
+    assert observed_equity[0] == pytest.approx(300.0)
 
     # 1% of $300 = $3 risk.
     # Entry-to-stop distance = $5.
     # Quantity = $3 / $5 = 0.6.
-    assert observed_quantity[0] == pytest.approx(
-        0.6
-    )
+    assert observed_quantity[0] == pytest.approx(0.6)
