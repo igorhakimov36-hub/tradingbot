@@ -18,6 +18,11 @@ class JournalEntry:
     timestamp: datetime
     event_type: JournalEventType
 
+    # Optional and last-in-line on purpose: portfolio support is being
+    # prepared for, but no existing single-symbol caller should be
+    # forced to name it.
+    symbol: str | None = None
+
     decision: str | None = None
     side: str | None = None
     score: float | None = None
@@ -105,6 +110,7 @@ class TradeJournal:
         decision: str,
         score: float | None = None,
         metadata: dict[str, Any] | None = None,
+        symbol: str | None = None,
     ) -> None:
 
         self.record(
@@ -114,6 +120,7 @@ class TradeJournal:
                 decision=decision,
                 score=score,
                 metadata=metadata,
+                symbol=symbol,
             )
         )
 
@@ -123,6 +130,7 @@ class TradeJournal:
         timestamp: datetime,
         score: float | None = None,
         metadata: dict[str, Any] | None = None,
+        symbol: str | None = None,
     ) -> None:
 
         self.record(
@@ -132,6 +140,7 @@ class TradeJournal:
                 decision="IGNORE",
                 score=score,
                 metadata=metadata,
+                symbol=symbol,
             )
         )
 
@@ -145,6 +154,7 @@ class TradeJournal:
         take_profit: float,
         quantity: float,
         metadata: dict[str, Any] | None = None,
+        symbol: str | None = None,
     ) -> None:
 
         self.record(
@@ -157,6 +167,7 @@ class TradeJournal:
                 take_profit=take_profit,
                 quantity=quantity,
                 metadata=metadata,
+                symbol=symbol,
             )
         )
 
@@ -168,6 +179,7 @@ class TradeJournal:
         requested_entry: float,
         reason: str,
         metadata: dict[str, Any] | None = None,
+        symbol: str | None = None,
     ) -> None:
 
         self.record(
@@ -178,6 +190,7 @@ class TradeJournal:
                 requested_entry=requested_entry,
                 rejection_reason=reason,
                 metadata=metadata,
+                symbol=symbol,
             )
         )
 
@@ -193,6 +206,7 @@ class TradeJournal:
         quantity: float,
         entry_fee: float,
         metadata: dict[str, Any] | None = None,
+        symbol: str | None = None,
     ) -> None:
 
         self.record(
@@ -207,6 +221,7 @@ class TradeJournal:
                 quantity=quantity,
                 entry_fee=entry_fee,
                 metadata=metadata,
+                symbol=symbol,
             )
         )
 
@@ -224,6 +239,7 @@ class TradeJournal:
         net_pnl: float,
         exit_reason: str,
         metadata: dict[str, Any] | None = None,
+        symbol: str | None = None,
     ) -> None:
 
         self.record(
@@ -240,6 +256,7 @@ class TradeJournal:
                 net_pnl=net_pnl,
                 exit_reason=exit_reason,
                 metadata=metadata,
+                symbol=symbol,
             )
         )
 

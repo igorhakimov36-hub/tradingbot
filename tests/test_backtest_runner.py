@@ -9,7 +9,7 @@ from strategy.trade_setup import (
 
 from datetime import datetime, timezone
 
-from backtesting.backtest_runner import BacktestRunner
+from backtesting.backtest_runner import BacktestRunner, ProviderSpec
 from backtesting.window_manager import (
     TimeWindow,
     WindowManager,
@@ -92,7 +92,7 @@ def test_runner_uses_only_requested_window():
 
     processed = []
 
-    def callback(current_candle, visible_history, market_snapshot):
+    def callback(current_candle, market_snapshot):
         processed.append(current_candle)
 
     runner.run(
@@ -113,12 +113,12 @@ def test_visible_history_contains_no_future_candles():
 
     future_detected = False
 
-    def callback(current_candle, visible_history, market_snapshot):
+    def callback(current_candle, market_snapshot):
         nonlocal future_detected
 
         current_time = current_candle["timestamp"]
 
-        for candle in visible_history:
+        for candle in market_snapshot["BTCUSDT"]["1m"]:
             if candle["timestamp"] > current_time:
                 future_detected = True
 
@@ -138,8 +138,8 @@ def test_visible_history_grows_inside_window():
 
     history_sizes = []
 
-    def callback(current_candle, visible_history, market_snapshot):
-        history_sizes.append(len(visible_history))
+    def callback(current_candle, market_snapshot):
+        history_sizes.append(len(market_snapshot["BTCUSDT"]["1m"]))
 
     runner.run(
         window_name="VALIDATION",
@@ -168,22 +168,28 @@ def test_runner_aligns_latest_available_oi():
     runner = BacktestRunner(
         window_manager=create_window_manager(),
         candles=create_candles(),
-        open_interest_records=oi_records,
+        provider_specs={
+            "BTCUSDT": {
+                "open_interest": ProviderSpec(
+                    kind="point_event",
+                    records=oi_records,
+                ),
+            },
+        },
     )
 
     snapshots = []
 
-    def callback(current_candle, visible_history, market_snapshot):
-        snapshots.append(market_snapshot)
+    def callback(current_candle, market_snapshot):
+        snapshots.append(market_snapshot["BTCUSDT"]["open_interest"])
 
     runner.run(
         window_name="VALIDATION",
         callback=callback,
     )
 
-    assert snapshots[0]["open_interest"]["open_interest"] == 1100.0
-
-    assert snapshots[1]["open_interest"]["open_interest"] == 1100.0
+    assert snapshots[0]["current"]["open_interest"] == 1100.0
+    assert snapshots[1]["current"]["open_interest"] == 1100.0
 
 
 def test_runner_never_uses_future_oi():
@@ -197,21 +203,28 @@ def test_runner_never_uses_future_oi():
     runner = BacktestRunner(
         window_manager=create_window_manager(),
         candles=create_candles(),
-        open_interest_records=oi_records,
+        provider_specs={
+            "BTCUSDT": {
+                "open_interest": ProviderSpec(
+                    kind="point_event",
+                    records=oi_records,
+                ),
+            },
+        },
     )
 
     snapshots = []
 
-    def callback(current_candle, visible_history, market_snapshot):
-        snapshots.append(market_snapshot)
+    def callback(current_candle, market_snapshot):
+        snapshots.append(market_snapshot["BTCUSDT"]["open_interest"])
 
     runner.run(
         window_name="VALIDATION",
         callback=callback,
     )
 
-    assert snapshots[0]["open_interest"] is None
-    assert snapshots[1]["open_interest"] is None
+    assert snapshots[0]["current"] is None
+    assert snapshots[1]["current"] is None
 
 
 def test_runner_aligns_funding_without_lookahead():
@@ -229,24 +242,31 @@ def test_runner_aligns_funding_without_lookahead():
     runner = BacktestRunner(
         window_manager=create_window_manager(),
         candles=create_candles(),
-        funding_records=funding_records,
+        provider_specs={
+            "BTCUSDT": {
+                "funding": ProviderSpec(
+                    kind="point_event",
+                    records=funding_records,
+                ),
+            },
+        },
     )
 
     snapshots = []
 
-    def callback(current_candle, visible_history, market_snapshot):
-        snapshots.append(market_snapshot)
+    def callback(current_candle, market_snapshot):
+        snapshots.append(market_snapshot["BTCUSDT"]["funding"])
 
     runner.run(
         window_name="VALIDATION",
         callback=callback,
     )
 
-    assert snapshots[0]["funding"]["funding_rate"] == 0.0001
-    assert snapshots[1]["funding"]["funding_rate"] == 0.0001
+    assert snapshots[0]["current"]["funding_rate"] == 0.0001
+    assert snapshots[1]["current"]["funding_rate"] == 0.0001
 
 
-def test_runner_snapshot_matches_current_candle():
+def test_runner_snapshot_1m_ends_with_current_candle():
     runner = BacktestRunner(
         window_manager=create_window_manager(),
         candles=create_candles(),
@@ -254,8 +274,11 @@ def test_runner_snapshot_matches_current_candle():
 
     checked = []
 
-    def callback(current_candle, visible_history, market_snapshot):
-        checked.append(market_snapshot["timestamp"] == current_candle["timestamp"])
+    def callback(current_candle, market_snapshot):
+        checked.append(
+            market_snapshot["BTCUSDT"]["1m"][-1]["timestamp"]
+            == current_candle["timestamp"]
+        )
 
     runner.run(
         window_name="VALIDATION",
@@ -273,7 +296,7 @@ def test_runner_can_run_held_out_separately():
 
     processed = []
 
-    def callback(current_candle, visible_history, market_snapshot):
+    def callback(current_candle, market_snapshot):
         processed.append(current_candle["close"])
 
     runner.run(
@@ -283,9 +306,8 @@ def test_runner_can_run_held_out_separately():
 
     assert processed == [104.0]
 
-    # =========================================================
 
-
+# =========================================================
 # FULL STRATEGY INTEGRATION
 # =========================================================
 
@@ -296,23 +318,14 @@ def test_run_strategy_records_ignore():
         candles=create_candles(),
     )
 
-    def strategy_callback(
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def strategy_callback(current_candle, market_snapshot):
         return {
             "decision": "IGNORE",
             "score": 50.0,
         }
 
-    def trade_setup_callback(
-        decision,
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
-        raise AssertionError("trade_setup_callback must not " "run for IGNORE")
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
+        raise AssertionError("trade_setup_callback must not run for IGNORE")
 
     result = runner.run_strategy(
         window_name="VALIDATION",
@@ -338,11 +351,7 @@ def test_run_strategy_opens_long_trade():
 
     calls = 0
 
-    def strategy_callback(
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def strategy_callback(current_candle, market_snapshot):
         nonlocal calls
         calls += 1
 
@@ -357,13 +366,7 @@ def test_run_strategy_opens_long_trade():
             "score": 40.0,
         }
 
-    def trade_setup_callback(
-        decision,
-        current_candle,
-        visible_history,
-        market_snapshot,
-        current_equity,
-    ):
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
         return create_trade_setup(
             side="LONG",
             entry_price=102.0,
@@ -384,6 +387,7 @@ def test_run_strategy_opens_long_trade():
     assert opened[0].side == "LONG"
     assert opened[0].stop_loss == 100.0
     assert opened[0].take_profit == 120.0
+    assert opened[0].symbol == "BTCUSDT"
 
 
 def test_run_strategy_long_stop_loss_flows_to_performance():
@@ -394,11 +398,7 @@ def test_run_strategy_long_stop_loss_flows_to_performance():
 
     first_call = True
 
-    def strategy_callback(
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def strategy_callback(current_candle, market_snapshot):
         nonlocal first_call
 
         if first_call:
@@ -414,13 +414,7 @@ def test_run_strategy_long_stop_loss_flows_to_performance():
             "score": 40.0,
         }
 
-    def trade_setup_callback(
-        decision,
-        current_candle,
-        visible_history,
-        market_snapshot,
-        current_equity,
-    ):
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
         return create_trade_setup(
             side="LONG",
             entry_price=102.0,
@@ -472,11 +466,7 @@ def test_run_strategy_long_take_profit_flows_to_performance():
 
     first_call = True
 
-    def strategy_callback(
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def strategy_callback(current_candle, market_snapshot):
         nonlocal first_call
 
         if first_call:
@@ -492,13 +482,7 @@ def test_run_strategy_long_take_profit_flows_to_performance():
             "score": 40.0,
         }
 
-    def trade_setup_callback(
-        decision,
-        current_candle,
-        visible_history,
-        market_snapshot,
-        current_equity,
-    ):
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
 
         return create_trade_setup(
             side="LONG",
@@ -530,23 +514,13 @@ def test_run_strategy_rejects_setup_side_mismatch():
         candles=create_candles(),
     )
 
-    def strategy_callback(
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def strategy_callback(current_candle, market_snapshot):
         return {
             "decision": "LONG",
             "score": 90.0,
         }
 
-    def trade_setup_callback(
-        decision,
-        current_candle,
-        visible_history,
-        market_snapshot,
-        current_equity,
-    ):
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
         return create_trade_setup(
             side="SHORT",
             entry_price=100.0,
@@ -569,22 +543,13 @@ def test_run_strategy_rejects_invalid_decision():
         candles=create_candles(),
     )
 
-    def strategy_callback(
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def strategy_callback(current_candle, market_snapshot):
         return {
             "decision": "BUY_NOW",
             "score": 100.0,
         }
 
-    def trade_setup_callback(
-        decision,
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
         raise AssertionError("trade setup must not be created")
 
     with pytest.raises(ValueError):
@@ -601,19 +566,10 @@ def test_run_strategy_requires_strategy_dictionary():
         candles=create_candles(),
     )
 
-    def strategy_callback(
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def strategy_callback(current_candle, market_snapshot):
         return "LONG"
 
-    def trade_setup_callback(
-        decision,
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
         raise AssertionError("trade setup must not be created")
 
     with pytest.raises(TypeError):
@@ -639,17 +595,20 @@ def test_run_strategy_preserves_point_in_time_snapshot():
     runner = BacktestRunner(
         window_manager=create_window_manager(),
         candles=create_candles(),
-        open_interest_records=oi_records,
+        provider_specs={
+            "BTCUSDT": {
+                "open_interest": ProviderSpec(
+                    kind="point_event",
+                    records=oi_records,
+                ),
+            },
+        },
     )
 
     observed_oi = []
 
-    def strategy_callback(
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
-        oi = market_snapshot["open_interest"]
+    def strategy_callback(current_candle, market_snapshot):
+        oi = market_snapshot["BTCUSDT"]["open_interest"]["current"]
 
         observed_oi.append(None if oi is None else oi["open_interest"])
 
@@ -658,12 +617,7 @@ def test_run_strategy_preserves_point_in_time_snapshot():
             "score": 0.0,
         }
 
-    def trade_setup_callback(
-        decision,
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
         raise AssertionError("trade setup must not run")
 
     runner.run_strategy(
@@ -687,23 +641,13 @@ def test_run_strategy_uses_current_equity_for_risk_based_position_size():
     observed_equity = []
     observed_quantity = []
 
-    def strategy_callback(
-        current_candle,
-        visible_history,
-        market_snapshot,
-    ):
+    def strategy_callback(current_candle, market_snapshot):
         return {
             "decision": "LONG",
             "score": 90.0,
         }
 
-    def trade_setup_callback(
-        decision,
-        current_candle,
-        visible_history,
-        market_snapshot,
-        current_equity,
-    ):
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
         observed_equity.append(current_equity)
 
         setup = create_risk_based_trade_setup(
@@ -732,3 +676,70 @@ def test_run_strategy_uses_current_equity_for_risk_based_position_size():
     # Entry-to-stop distance = $5.
     # Quantity = $3 / $5 = 0.6.
     assert observed_quantity[0] == pytest.approx(0.6)
+
+
+def test_run_strategy_records_symbol_on_signal_events():
+    runner = BacktestRunner(
+        window_manager=create_window_manager(),
+        candles=create_candles(),
+        symbol="ETHUSDT",
+    )
+
+    def strategy_callback(current_candle, market_snapshot):
+        assert "ETHUSDT" in market_snapshot
+        return {"decision": "IGNORE", "score": 10.0}
+
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
+        raise AssertionError("trade setup must not run")
+
+    result = runner.run_strategy(
+        window_name="VALIDATION",
+        strategy_callback=strategy_callback,
+        trade_setup_callback=trade_setup_callback,
+    )
+
+    signals = result.journal.by_event("SIGNAL")
+    assert all(entry.symbol == "ETHUSDT" for entry in signals)
+
+
+def test_context_symbol_attached_as_read_only_provider():
+    # A second symbol's OWN higher-timeframe candles, attached purely
+    # as context (e.g. for a future SMT/Correlation module) - never
+    # traded, never touching StrategyEngine's tradeable-symbol logic.
+    eth_candles_15m = [
+        {
+            "timestamp": utc_time(2, 1, 0),
+            "open": 2000.0,
+            "high": 2010.0,
+            "low": 1990.0,
+            "close": 2005.0,
+            "volume": 500.0,
+        },
+    ]
+
+    runner = BacktestRunner(
+        window_manager=create_window_manager(),
+        candles=create_candles(),
+        symbol="BTCUSDT",
+        provider_specs={
+            "ETHUSDT": {
+                "15m": ProviderSpec(
+                    kind="bar_series",
+                    records=eth_candles_15m,
+                    timeframe="15m",
+                ),
+            },
+        },
+    )
+
+    seen = []
+
+    def callback(current_candle, market_snapshot):
+        seen.append(market_snapshot.get("ETHUSDT"))
+
+    runner.run(
+        window_name="VALIDATION",
+        callback=callback,
+    )
+
+    assert seen[0] is not None

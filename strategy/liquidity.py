@@ -16,21 +16,15 @@ def detect_liquidity_sweep(
     current_low: float,
     current_close: float,
     previous_swing_high: float,
-    previous_swing_low: float
+    previous_swing_low: float,
 ):
     if previous_swing_high is None or previous_swing_low is None:
         return "NO_SWEEP"
 
-    if (
-        current_high > previous_swing_high
-        and current_close < previous_swing_high
-    ):
+    if current_high > previous_swing_high and current_close < previous_swing_high:
         return "BEARISH_SWEEP"
 
-    if (
-        current_low < previous_swing_low
-        and current_close > previous_swing_low
-    ):
+    if current_low < previous_swing_low and current_close > previous_swing_low:
         return "BULLISH_SWEEP"
 
     return "NO_SWEEP"
@@ -42,29 +36,17 @@ def calculate_sweep_strength(
     current_low: float,
     current_close: float,
     previous_swing_high: float,
-    previous_swing_low: float
+    previous_swing_low: float,
 ):
     if sweep_type == "BEARISH_SWEEP":
-        penetration = (
-            (current_high - previous_swing_high)
-            / previous_swing_high
-        ) * 100
+        penetration = ((current_high - previous_swing_high) / previous_swing_high) * 100
 
-        rejection = (
-            (current_high - current_close)
-            / current_high
-        ) * 100
+        rejection = ((current_high - current_close) / current_high) * 100
 
     elif sweep_type == "BULLISH_SWEEP":
-        penetration = (
-            (previous_swing_low - current_low)
-            / previous_swing_low
-        ) * 100
+        penetration = ((previous_swing_low - current_low) / previous_swing_low) * 100
 
-        rejection = (
-            (current_close - current_low)
-            / current_low
-        ) * 100
+        rejection = ((current_close - current_low) / current_low) * 100
 
     else:
         return 0.0

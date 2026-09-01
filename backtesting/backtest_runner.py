@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from analytics.performance import (
     PerformanceReport,
@@ -15,7 +15,12 @@ from backtesting.execution_simulator import (
 from backtesting.replay_engine import ReplayEngine
 from backtesting.trade_journal import TradeJournal
 from backtesting.window_manager import WindowManager
-from data.market_data_aligner import align_market_data
+from data.market_data_provider import (
+    BarSeriesProvider,
+    MarketDataProvider,
+    PointEventProvider,
+    ReplayContext,
+)
 from strategy.trade_setup import TradeSetup
 
 
@@ -25,52 +30,84 @@ class BacktestResult:
     performance: PerformanceReport
 
 
+@dataclass(frozen=True)
+class ProviderSpec:
+    """
+    Describes how to build a MarketDataProvider for one named market
+    data stream, without committing to windowed/instantiated state
+    up front. BacktestRunner turns this into a real, window-scoped,
+    freshly-synced Provider inside each run() / run_strategy() call -
+    exactly like a fresh TimeframeManager used to be built per run.
+
+    kind="point_event": a value known at an instant (Funding, Open
+        Interest, ...). `records` is the raw historical series.
+
+    kind="bar_series": a value per closed time bucket (a secondary
+        timeframe, or a future per-candle Delta/Footprint/CVD series).
+        `records` is the native candle series; `timeframe` is required.
+    """
+
+    kind: Literal["point_event", "bar_series"]
+    records: list[dict[str, Any]]
+    timeframe: str | None = None
+
+
 class BacktestRunner:
     """
     Coordinates the point-in-time-safe backtesting pipeline.
 
-    Existing run():
-
         Window Manager
             -> Replay Engine
-            -> Market Data Alignment
-            -> callback
+            -> Market Data Providers (generic - any symbol, any
+               datatype, any timeframe; adding one never requires
+               touching this class or the Strategy Engine)
+            -> Strategy               [run_strategy() only]
+            -> Trade Setup            [run_strategy() only]
+            -> Execution Simulator    [run_strategy() only]
+            -> Trade Journal          [run_strategy() only]
+            -> Performance Report     [run_strategy() only]
 
-    Full run_strategy():
+    `run()` and `run_strategy()` share the exact same market_snapshot
+    assembly - there used to be two separate code paths (one hardcoded
+    to Open Interest/Funding, one generic); now there's one.
 
-        Window Manager
-            -> Replay Engine
-            -> Market Data Alignment
-            -> Strategy
-            -> Trade Setup
-            -> Execution Simulator
-            -> Trade Journal
-            -> Performance Report
-
-    The existing run() API is intentionally preserved.
+    Current limitation (deliberate, not yet lifted):
+    Only one symbol is actively traded per BacktestRunner instance,
+    and only one active trade/order at a time. Other symbols CAN be
+    attached as read-only context via provider_specs (e.g. for a
+    future SMT/Correlation module) without being tradeable themselves.
+    A true multi-symbol replay clock (independent trading per symbol
+    in one run) is a bigger change, deliberately not made here - see
+    the architecture note delivered alongside this change.
     """
 
     def __init__(
         self,
         window_manager: WindowManager,
         candles: list[dict[str, Any]],
-        open_interest_records: list[dict[str, Any]] | None = None,
-        funding_records: list[dict[str, Any]] | None = None,
+        symbol: str = "BTCUSDT",
+        provider_specs: dict[str, dict[str, ProviderSpec]] | None = None,
         timestamp_key: str = "timestamp",
     ):
         self.window_manager = window_manager
         self.candles = candles
-        self.open_interest_records = (
-            open_interest_records or []
-        )
-        self.funding_records = (
-            funding_records or []
-        )
+        self.symbol = symbol
+        self.provider_specs = provider_specs or {}
         self.timestamp_key = timestamp_key
 
     # =====================================================
-    # ORIGINAL POINT-IN-TIME RUNNER
+    # SHARED HELPERS
     # =====================================================
+
+    def _get_records_for_window(
+        self,
+        records: list[dict[str, Any]],
+        window_name: str,
+    ) -> list[dict[str, Any]]:
+        return self.window_manager.get_records(
+            records=records,
+            window_name=window_name,
+        )
 
     def get_window_candles(
         self,
@@ -81,10 +118,99 @@ class BacktestRunner:
         TRAIN / VALIDATION / HELD_OUT window.
         """
 
-        return self.window_manager.get_records(
+        return self._get_records_for_window(
             records=self.candles,
             window_name=window_name,
         )
+
+    def _build_providers(
+        self,
+        window_name: str,
+    ) -> dict[str, dict[str, MarketDataProvider]]:
+        """
+        Build fresh, window-scoped providers from provider_specs.
+
+        A new set per run() / run_strategy() call is required - state
+        must never leak between TRAIN/VALIDATION/HELD_OUT runs.
+        """
+
+        providers: dict[str, dict[str, MarketDataProvider]] = {}
+
+        for symbol, specs_by_name in self.provider_specs.items():
+
+            providers[symbol] = {}
+
+            for name, spec in specs_by_name.items():
+
+                windowed_records = self._get_records_for_window(
+                    records=spec.records,
+                    window_name=window_name,
+                )
+
+                if spec.kind == "point_event":
+                    providers[symbol][name] = PointEventProvider(
+                        name=name,
+                        records=windowed_records,
+                        timestamp_key=self.timestamp_key,
+                    )
+
+                elif spec.kind == "bar_series":
+                    if spec.timeframe is None:
+                        raise ValueError(
+                            f"bar_series provider '{name}' requires "
+                            f"a timeframe"
+                        )
+
+                    providers[symbol][name] = BarSeriesProvider(
+                        name=name,
+                        timeframe=spec.timeframe,
+                        native_series=windowed_records,
+                        timestamp_key=self.timestamp_key,
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Unknown provider kind: {spec.kind}"
+                    )
+
+        return providers
+
+    def _build_market_snapshot(
+        self,
+        context: ReplayContext,
+        providers: dict[str, dict[str, MarketDataProvider]],
+    ) -> dict[str, Any]:
+        """
+        Assemble market_snapshot generically:
+
+            market_snapshot[symbol][data_type]
+
+        The primary (traded) symbol's 1m history is attached directly
+        (it already IS the point-in-time-safe replay clock, no
+        provider/sync needed for it). Every other registered stream -
+        any symbol, any datatype, any timeframe - is synced against
+        the same clock and attached the same way. Strategy Engine
+        never learns whether a given entry came from Binance, Bybit,
+        a CSV replay, or a live feed.
+        """
+
+        snapshot: dict[str, Any] = {
+            self.symbol: {"1m": context.visible_history_1m},
+        }
+
+        for symbol, providers_by_name in providers.items():
+
+            symbol_snapshot = snapshot.setdefault(symbol, {})
+
+            for name, provider in providers_by_name.items():
+                provider.sync(context)
+                symbol_snapshot[name] = provider.snapshot()
+
+        return snapshot
+
+    # =====================================================
+    # ORIGINAL POINT-IN-TIME RUNNER
+    # =====================================================
 
     def run(
         self,
@@ -92,7 +218,6 @@ class BacktestRunner:
         callback: Callable[
             [
                 dict[str, Any],
-                list[dict[str, Any]],
                 dict[str, Any],
             ],
             None,
@@ -104,15 +229,16 @@ class BacktestRunner:
         callback receives:
 
         1. current candle
-        2. visible candle history
-        3. aligned market snapshot
-
-        The snapshot contains only OI/Funding data
-        available at the current candle timestamp.
+        2. market_snapshot (point-in-time-safe; market_snapshot[symbol]
+           holds "1m" plus every registered provider's data)
         """
 
         window_candles = self.get_window_candles(
             window_name=window_name
+        )
+
+        providers = self._build_providers(
+            window_name=window_name,
         )
 
         replay_engine = ReplayEngine(
@@ -129,21 +255,19 @@ class BacktestRunner:
                 self.timestamp_key
             ]
 
-            market_snapshot = align_market_data(
-                candle=current_candle,
+            context = ReplayContext(
                 current_time=current_time,
-                open_interest_records=(
-                    self.open_interest_records
-                ),
-                funding_records=(
-                    self.funding_records
-                ),
-                timestamp_key=self.timestamp_key,
+                current_candle=current_candle,
+                visible_history_1m=visible_history,
+            )
+
+            market_snapshot = self._build_market_snapshot(
+                context=context,
+                providers=providers,
             )
 
             callback(
                 current_candle,
-                visible_history,
                 market_snapshot,
             )
 
@@ -159,7 +283,6 @@ class BacktestRunner:
         strategy_callback: Callable[
             [
                 dict[str, Any],
-                list[dict[str, Any]],
                 dict[str, Any],
             ],
             dict[str, Any],
@@ -168,7 +291,6 @@ class BacktestRunner:
             [
                 str,
                 dict[str, Any],
-                list[dict[str, Any]],
                 dict[str, Any],
                 float,
             ],
@@ -177,11 +299,17 @@ class BacktestRunner:
         execution_config: ExecutionConfig | None = None,
         initial_equity: float = 10_000.0,
     ) -> BacktestResult:
-        
+
         """
         Run a complete strategy simulation.
 
-        strategy_callback returns:
+        strategy_callback receives:
+
+            1. current candle (1m, primary symbol)
+            2. market_snapshot (market_snapshot[symbol]["1m"/"15m"/
+               "funding"/"open_interest"/...])
+
+        and returns:
 
             {
                 "decision": "LONG" | "SHORT" | "IGNORE",
@@ -195,9 +323,8 @@ class BacktestRunner:
 
             1. decision
             2. current candle
-            3. visible history
-            4. market snapshot
-            5. current equity
+            3. market_snapshot
+            4. current equity
 
         This allows position sizing to use the account
         equity available at that exact point in the backtest.
@@ -228,6 +355,10 @@ class BacktestRunner:
             or ExecutionConfig()
         )
 
+        providers = self._build_providers(
+            window_name=window_name,
+        )
+
         active_trade: SimulatedTrade | None = None
         pending_order: PendingOrder | None = None
 
@@ -247,7 +378,7 @@ class BacktestRunner:
 
         def on_replay_step(
             current_candle: dict[str, Any],
-            visible_history: list[dict[str, Any]],
+            visible_history_1m: list[dict[str, Any]],
         ) -> None:
 
             nonlocal active_trade
@@ -257,18 +388,6 @@ class BacktestRunner:
             current_time = current_candle[
                 self.timestamp_key
             ]
-
-            market_snapshot = align_market_data(
-                candle=current_candle,
-                current_time=current_time,
-                open_interest_records=(
-                    self.open_interest_records
-                ),
-                funding_records=(
-                    self.funding_records
-                ),
-                timestamp_key=self.timestamp_key,
-            )
 
             # ---------------------------------------------
             # 1. Existing open trade
@@ -299,6 +418,7 @@ class BacktestRunner:
                         gross_pnl=active_trade.gross_pnl,
                         net_pnl=active_trade.net_pnl,
                         exit_reason=active_trade.exit_reason,
+                        symbol=active_trade.symbol,
                     )
 
                     # Dynamic equity:
@@ -344,6 +464,7 @@ class BacktestRunner:
                             execution_result.requested_entry
                         ),
                         reason=execution_result.reason,
+                        symbol=execution_result.symbol,
                     )
 
                     pending_order = None
@@ -371,6 +492,7 @@ class BacktestRunner:
                         ),
                         quantity=active_trade.quantity,
                         entry_fee=active_trade.entry_fee,
+                        symbol=active_trade.symbol,
                     )
 
                     return
@@ -383,9 +505,22 @@ class BacktestRunner:
             # 3. Ask strategy for a decision
             # ---------------------------------------------
 
+            # Only computed here - steps 1/2 above return before ever
+            # using it, so there is no point paying for it on every
+            # single candle while a trade/order is already active.
+            context = ReplayContext(
+                current_time=current_time,
+                current_candle=current_candle,
+                visible_history_1m=visible_history_1m,
+            )
+
+            market_snapshot = self._build_market_snapshot(
+                context=context,
+                providers=providers,
+            )
+
             decision_result = strategy_callback(
                 current_candle,
-                visible_history,
                 market_snapshot,
             )
 
@@ -411,6 +546,7 @@ class BacktestRunner:
                 decision=str(decision),
                 score=score,
                 metadata=dict(decision_result),
+                symbol=self.symbol,
             )
 
             # ---------------------------------------------
@@ -423,6 +559,7 @@ class BacktestRunner:
                     timestamp=current_time,
                     score=score,
                     metadata=dict(decision_result),
+                    symbol=self.symbol,
                 )
 
                 return
@@ -443,7 +580,6 @@ class BacktestRunner:
             setup = trade_setup_callback(
                 decision,
                 current_candle,
-                visible_history,
                 market_snapshot,
                 current_equity,
             )
@@ -468,6 +604,7 @@ class BacktestRunner:
             # ---------------------------------------------
 
             execution_result = simulator.open_trade(
+                symbol=self.symbol,
                 side=setup.side,
                 entry_price=setup.entry_price,
                 stop_loss=setup.stop_loss,
@@ -505,6 +642,7 @@ class BacktestRunner:
                             current_equity
                         ),
                     },
+                    symbol=pending_order.symbol,
                 )
 
                 return
@@ -530,6 +668,7 @@ class BacktestRunner:
                             current_equity
                         ),
                     },
+                    symbol=execution_result.symbol,
                 )
 
                 return
@@ -561,6 +700,7 @@ class BacktestRunner:
                             current_equity
                         ),
                     },
+                    symbol=active_trade.symbol,
                 )
 
                 return

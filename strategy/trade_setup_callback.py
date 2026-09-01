@@ -3,11 +3,12 @@ from strategy.trade_setup import (
     TradeSetup,
 )
 
+MIN_RISK_PERCENT = 0.006
+
 
 def trade_setup_callback(
     decision: str,
     current_candle: dict,
-    visible_history: list[dict],
     market_snapshot: dict,
     current_equity: float,
 ) -> TradeSetup:
@@ -23,8 +24,13 @@ def trade_setup_callback(
 
         risk = entry - stop
 
-        if risk < entry * 0.002:
-            stop = entry * 0.998
+        # Round-trip fees + slippage cost ~0.12% of price
+        # (see ExecutionConfig). A stop tighter than that
+        # gets mostly eaten by friction before it reflects
+        # real market risk, so the floor keeps friction under
+        # roughly a fifth of the planned risk per trade.
+        if risk < entry * MIN_RISK_PERCENT:
+            stop = entry * (1 - MIN_RISK_PERCENT)
             risk = entry - stop
 
         take_profit = entry + (risk * 2)
@@ -38,8 +44,8 @@ def trade_setup_callback(
 
         risk = stop - entry
 
-        if risk < entry * 0.002:
-            stop = entry * 1.002
+        if risk < entry * MIN_RISK_PERCENT:
+            stop = entry * (1 + MIN_RISK_PERCENT)
             risk = stop - entry
 
         take_profit = entry - (risk * 2)

@@ -65,6 +65,11 @@ class PendingOrder:
 
     bars_remaining: int
 
+    # Defaults to "UNKNOWN" rather than being required - portfolio
+    # support is being prepared for, but a single-symbol caller (all
+    # current callers) should never be forced to name it.
+    symbol: str = "UNKNOWN"
+
 
 @dataclass
 class RejectedOrder:
@@ -76,6 +81,7 @@ class RejectedOrder:
     quantity: float
 
     reason: str = "NOT_FILLED"
+    symbol: str = "UNKNOWN"
 
 
 @dataclass
@@ -101,6 +107,8 @@ class SimulatedTrade:
     net_pnl: float = 0.0
 
     is_open: bool = True
+
+    symbol: str = "UNKNOWN"
 
 
 class ExecutionSimulator:
@@ -239,6 +247,7 @@ class ExecutionSimulator:
         stop_loss: float,
         take_profit: float,
         quantity: float,
+        symbol: str,
     ) -> RejectedOrder:
 
         return RejectedOrder(
@@ -247,6 +256,7 @@ class ExecutionSimulator:
             stop_loss=stop_loss,
             take_profit=take_profit,
             quantity=quantity,
+            symbol=symbol,
         )
 
 
@@ -258,6 +268,7 @@ class ExecutionSimulator:
         stop_loss: float,
         take_profit: float,
         quantity: float,
+        symbol: str,
     ) -> SimulatedTrade | RejectedOrder:
         """
         Attempt to fill an order.
@@ -275,6 +286,7 @@ class ExecutionSimulator:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 quantity=quantity,
+                symbol=symbol,
             )
 
         executed_entry = self._apply_entry_slippage(
@@ -299,6 +311,7 @@ class ExecutionSimulator:
             take_profit=take_profit,
             quantity=quantity,
             entry_fee=entry_fee,
+            symbol=symbol,
         )
 
 
@@ -309,6 +322,7 @@ class ExecutionSimulator:
         stop_loss: float,
         take_profit: float,
         quantity: float,
+        symbol: str = "UNKNOWN",
     ) -> (
         SimulatedTrade
         | PendingOrder
@@ -341,6 +355,7 @@ class ExecutionSimulator:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 quantity=quantity,
+                symbol=symbol,
             )
 
         return PendingOrder(
@@ -350,6 +365,7 @@ class ExecutionSimulator:
             take_profit=take_profit,
             quantity=quantity,
             bars_remaining=self.config.latency_bars,
+            symbol=symbol,
         )
 
 
@@ -391,6 +407,7 @@ class ExecutionSimulator:
             stop_loss=order.stop_loss,
             take_profit=order.take_profit,
             quantity=order.quantity,
+            symbol=order.symbol,
         )
 
 
