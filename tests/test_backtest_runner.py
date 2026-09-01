@@ -508,6 +508,82 @@ def test_run_strategy_long_take_profit_flows_to_performance():
     assert result.performance.total_net_pnl > 0
 
 
+def test_run_strategy_threads_setup_name_from_signal_to_closed():
+    # Strategy Engine V2 (Phase 2.1): a decision dict carrying
+    # "setup_name" must have that name attached to every downstream
+    # journal event for the same trade - SIGNAL, OPENED, and CLOSED -
+    # not just the initial signal.
+    candles = [
+        {
+            "timestamp": utc_time(2, 10),
+            "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1000.0,
+        },
+        {
+            "timestamp": utc_time(2, 11),
+            "open": 100.0, "high": 111.0, "low": 99.0, "close": 110.0, "volume": 1000.0,
+        },
+    ]
+
+    runner = BacktestRunner(
+        window_manager=create_window_manager(),
+        candles=candles,
+    )
+
+    first_call = True
+
+    def strategy_callback(current_candle, market_snapshot):
+        nonlocal first_call
+
+        if first_call:
+            first_call = False
+            return {"decision": "LONG", "setup_name": "liquidity_sweep_reversal"}
+
+        return {"decision": "IGNORE"}
+
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
+        return create_trade_setup(
+            side="LONG", entry_price=100.0, stop_loss=95.0, take_profit=110.0, quantity=1.0,
+        )
+
+    result = runner.run_strategy(
+        window_name="VALIDATION",
+        strategy_callback=strategy_callback,
+        trade_setup_callback=trade_setup_callback,
+    )
+
+    signal = result.journal.by_event("SIGNAL")[0]
+    opened = result.journal.by_event("OPENED")[0]
+    closed = result.journal.closed_trades()[0]
+
+    assert signal.setup_name == "liquidity_sweep_reversal"
+    assert opened.setup_name == "liquidity_sweep_reversal"
+    assert closed.setup_name == "liquidity_sweep_reversal"
+
+    matching = result.journal.by_setup("liquidity_sweep_reversal")
+    assert len(matching) == 3  # SIGNAL, OPENED, CLOSED
+
+
+def test_run_strategy_setup_name_defaults_to_none_for_old_engine():
+    runner = BacktestRunner(
+        window_manager=create_window_manager(),
+        candles=create_candles(),
+    )
+
+    def strategy_callback(current_candle, market_snapshot):
+        return {"decision": "IGNORE", "score": 40.0}
+
+    def trade_setup_callback(decision, current_candle, market_snapshot, current_equity):
+        raise AssertionError("trade setup must not run")
+
+    result = runner.run_strategy(
+        window_name="VALIDATION",
+        strategy_callback=strategy_callback,
+        trade_setup_callback=trade_setup_callback,
+    )
+
+    assert all(entry.setup_name is None for entry in result.journal.entries())
+
+
 def test_run_strategy_rejects_setup_side_mismatch():
     runner = BacktestRunner(
         window_manager=create_window_manager(),

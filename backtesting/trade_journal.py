@@ -27,6 +27,12 @@ class JournalEntry:
     side: str | None = None
     score: float | None = None
 
+    # Strategy Engine V2 (Phase 2.1): which named institutional setup
+    # produced this event, if any. None for every event from the old
+    # score-based engine, which has no concept of a named setup -
+    # purely additive, no existing caller needs to name it.
+    setup_name: str | None = None
+
     requested_entry: float | None = None
     entry_price: float | None = None
     exit_price: float | None = None
@@ -111,6 +117,7 @@ class TradeJournal:
         score: float | None = None,
         metadata: dict[str, Any] | None = None,
         symbol: str | None = None,
+        setup_name: str | None = None,
     ) -> None:
 
         self.record(
@@ -121,6 +128,7 @@ class TradeJournal:
                 score=score,
                 metadata=metadata,
                 symbol=symbol,
+                setup_name=setup_name,
             )
         )
 
@@ -131,6 +139,7 @@ class TradeJournal:
         score: float | None = None,
         metadata: dict[str, Any] | None = None,
         symbol: str | None = None,
+        setup_name: str | None = None,
     ) -> None:
 
         self.record(
@@ -141,6 +150,7 @@ class TradeJournal:
                 score=score,
                 metadata=metadata,
                 symbol=symbol,
+                setup_name=setup_name,
             )
         )
 
@@ -155,6 +165,7 @@ class TradeJournal:
         quantity: float,
         metadata: dict[str, Any] | None = None,
         symbol: str | None = None,
+        setup_name: str | None = None,
     ) -> None:
 
         self.record(
@@ -168,6 +179,7 @@ class TradeJournal:
                 quantity=quantity,
                 metadata=metadata,
                 symbol=symbol,
+                setup_name=setup_name,
             )
         )
 
@@ -180,6 +192,7 @@ class TradeJournal:
         reason: str,
         metadata: dict[str, Any] | None = None,
         symbol: str | None = None,
+        setup_name: str | None = None,
     ) -> None:
 
         self.record(
@@ -191,6 +204,7 @@ class TradeJournal:
                 rejection_reason=reason,
                 metadata=metadata,
                 symbol=symbol,
+                setup_name=setup_name,
             )
         )
 
@@ -207,6 +221,7 @@ class TradeJournal:
         entry_fee: float,
         metadata: dict[str, Any] | None = None,
         symbol: str | None = None,
+        setup_name: str | None = None,
     ) -> None:
 
         self.record(
@@ -222,6 +237,7 @@ class TradeJournal:
                 entry_fee=entry_fee,
                 metadata=metadata,
                 symbol=symbol,
+                setup_name=setup_name,
             )
         )
 
@@ -240,6 +256,7 @@ class TradeJournal:
         exit_reason: str,
         metadata: dict[str, Any] | None = None,
         symbol: str | None = None,
+        setup_name: str | None = None,
     ) -> None:
 
         self.record(
@@ -257,6 +274,7 @@ class TradeJournal:
                 exit_reason=exit_reason,
                 metadata=metadata,
                 symbol=symbol,
+                setup_name=setup_name,
             )
         )
 
@@ -303,6 +321,23 @@ class TradeJournal:
     ) -> list[JournalEntry]:
 
         return self.by_event("IGNORED")
+
+
+    def by_setup(
+        self,
+        setup_name: str,
+    ) -> list[JournalEntry]:
+        """
+        Every entry (any event type) produced by a specific named
+        setup - the basis for per-setup statistics (win rate,
+        expectancy, sample size) without digging through metadata.
+        """
+
+        return [
+            entry
+            for entry in self._entries
+            if entry.setup_name == setup_name
+        ]
 
 
     def total_net_pnl(

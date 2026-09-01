@@ -218,3 +218,56 @@ def test_native_series_for_undeclared_timeframe_raises():
 
     with pytest.raises(ValueError):
         TimeframeManager(["5m"], native_series={"15m": native_15m})
+
+
+# =========================================================
+# taker_buy_volume aggregation - discovered missing while validating
+# CVD (strategy/features/cvd.py) against real BTCUSDT data: derived
+# (non-native) timeframes were silently dropping this field, even
+# though every source 1m candle carried it.
+# =========================================================
+
+
+def _candle_with_taker(minute_offset: int, volume, taker_buy_volume):
+    candle = _candle(minute_offset, 100, 101, 99, 100, volume)
+    candle["taker_buy_volume"] = taker_buy_volume
+    return candle
+
+
+def test_taker_buy_volume_is_summed_across_a_derived_bucket():
+    manager = TimeframeManager(["5m"])
+    candles = [_candle_with_taker(i, volume=10, taker_buy_volume=6) for i in range(6)]
+
+    manager.sync(candles)
+
+    closed = manager.get_history("5m")
+    assert len(closed) == 1
+    assert closed[0]["taker_buy_volume"] == pytest.approx(30.0)  # 5 contributing minutes * 6
+
+
+def test_taker_buy_volume_is_none_when_source_field_absent():
+    manager = TimeframeManager(["5m"])
+    candles = _make_1m_series(6)  # no taker_buy_volume key at all
+
+    manager.sync(candles)
+
+    assert manager.get_history("5m")[0]["taker_buy_volume"] is None
+
+
+def test_taker_buy_volume_is_none_if_any_contributing_minute_is_missing_it():
+    manager = TimeframeManager(["5m"])
+    candles = [
+        _candle_with_taker(0, volume=10, taker_buy_volume=6),
+        _candle_with_taker(1, volume=10, taker_buy_volume=6),
+        _candle(2, 100, 101, 99, 100, 10),  # missing taker_buy_volume entirely
+        _candle_with_taker(3, volume=10, taker_buy_volume=6),
+        _candle_with_taker(4, volume=10, taker_buy_volume=6),
+        _candle_with_taker(5, volume=10, taker_buy_volume=6),  # closes the bucket
+    ]
+
+    manager.sync(candles)
+
+    # A partial sum across some-known/some-missing minutes would be a
+    # fabricated approximation - the whole bucket must poison to None,
+    # never silently sum only the minutes that happened to have data.
+    assert manager.get_history("5m")[0]["taker_buy_volume"] is None

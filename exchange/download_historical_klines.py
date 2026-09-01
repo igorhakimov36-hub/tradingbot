@@ -152,7 +152,15 @@ def save_klines_csv(
         writer = csv.writer(csv_file)
 
         writer.writerow(
-            ["open_time", "open", "high", "low", "close", "volume"]
+            [
+                "open_time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "taker_buy_volume",
+            ]
         )
 
         for kline in klines:
@@ -164,6 +172,10 @@ def save_klines_csv(
                     kline[3],
                     kline[4],
                     kline[5],
+                    # index 9 = taker_buy_base_asset_volume - already
+                    # returned by Binance on every kline request, just
+                    # not persisted until now.
+                    kline[9],
                 ]
             )
 

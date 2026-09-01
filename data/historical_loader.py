@@ -58,7 +58,7 @@ def normalize_ohlcv_record(
     if missing:
         raise ValueError(f"Missing OHLCV fields: {missing}")
 
-    return {
+    normalized = {
         "timestamp": parse_timestamp(record["timestamp"]),
         "open": _to_float(
             record["open"],
@@ -81,6 +81,19 @@ def normalize_ohlcv_record(
             "volume",
         ),
     }
+
+    # Optional: not every source provides this (older/third-party CSV
+    # dumps may not), so it is never required - callers must handle
+    # None explicitly rather than assume it is always present.
+    taker_buy_volume = record.get("taker_buy_volume")
+
+    normalized["taker_buy_volume"] = (
+        _to_float(taker_buy_volume, "taker_buy_volume")
+        if taker_buy_volume not in (None, "")
+        else None
+    )
+
+    return normalized
 
 
 def normalize_ohlcv_records(
@@ -118,15 +131,20 @@ def load_ohlcv_csv(
 
         for row in reader:
 
-            records.append(
-                {
-                    "timestamp": row["open_time"],
-                    "open": row["open"],
-                    "high": row["high"],
-                    "low": row["low"],
-                    "close": row["close"],
-                    "volume": row["volume"],
-                }
-            )
+            record = {
+                "timestamp": row["open_time"],
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "volume": row["volume"],
+            }
+
+            # Present in Binance Vision monthly dumps; absent from the
+            # slimmer REST-downloaded CSVs. Optional either way.
+            if "taker_buy_volume" in row:
+                record["taker_buy_volume"] = row["taker_buy_volume"]
+
+            records.append(record)
 
     return normalize_ohlcv_records(records)

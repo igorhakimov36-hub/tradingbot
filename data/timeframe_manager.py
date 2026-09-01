@@ -183,6 +183,7 @@ class TimeframeManager:
             "low": candle["low"],
             "close": candle["close"],
             "volume": candle["volume"],
+            "taker_buy_volume": candle.get("taker_buy_volume"),
         }
 
     def _merge(self, bucket: dict[str, Any], candle: dict[str, Any]) -> None:
@@ -190,6 +191,18 @@ class TimeframeManager:
         bucket["low"] = min(bucket["low"], candle["low"])
         bucket["close"] = candle["close"]
         bucket["volume"] += candle["volume"]
+
+        # A partial sum across some-known/some-missing minutes would be
+        # a fabricated approximation, not an honest gap - the same
+        # "never silently default to zero/partial" principle
+        # strategy/features/delta.py already applies. One missing
+        # contributing minute poisons the whole aggregated bucket.
+        candle_taker_buy = candle.get("taker_buy_volume")
+
+        if bucket["taker_buy_volume"] is None or candle_taker_buy is None:
+            bucket["taker_buy_volume"] = None
+        else:
+            bucket["taker_buy_volume"] += candle_taker_buy
 
     def _advance_native(self, timeframe: str) -> None:
         """

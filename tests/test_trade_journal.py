@@ -469,3 +469,43 @@ def test_to_dicts_exports_journal_entries():
     assert result[0]["decision"] == "LONG"
     assert result[0]["score"] == 88.0
     assert result[0]["timestamp"] == utc_time()
+
+
+# =========================================================
+# SETUP_NAME (Phase 2.1 - Strategy Engine V2)
+# =========================================================
+
+
+def test_setup_name_defaults_to_none_for_old_engine_entries():
+    journal = TradeJournal()
+    journal.record_signal(timestamp=utc_time(), decision="LONG", score=88.0)
+
+    assert journal.entries()[0].setup_name is None
+
+
+def test_setup_name_is_recorded_across_event_types():
+    journal = TradeJournal()
+
+    journal.record_signal(timestamp=utc_time(0), decision="LONG", setup_name="liquidity_sweep_reversal")
+    journal.record_opened(
+        timestamp=utc_time(1), side="LONG", requested_entry=100.0, entry_price=100.0,
+        stop_loss=95.0, take_profit=110.0, quantity=1.0, entry_fee=0.1,
+        setup_name="liquidity_sweep_reversal",
+    )
+    journal.record_closed(
+        timestamp=utc_time(2), side="LONG", entry_price=100.0, exit_price=110.0,
+        quantity=1.0, entry_fee=0.1, exit_fee=0.1, gross_pnl=10.0, net_pnl=9.8,
+        exit_reason="TAKE_PROFIT", setup_name="liquidity_sweep_reversal",
+    )
+    journal.record_ignored(timestamp=utc_time(3))  # a different, unrelated signal
+
+    matching = journal.by_setup("liquidity_sweep_reversal")
+    assert len(matching) == 3
+    assert {e.event_type for e in matching} == {"SIGNAL", "OPENED", "CLOSED"}
+
+
+def test_by_setup_returns_empty_for_unknown_setup():
+    journal = TradeJournal()
+    journal.record_signal(timestamp=utc_time(), decision="IGNORE")
+
+    assert journal.by_setup("nonexistent_setup") == []

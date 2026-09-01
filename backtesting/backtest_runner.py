@@ -362,6 +362,14 @@ class BacktestRunner:
         active_trade: SimulatedTrade | None = None
         pending_order: PendingOrder | None = None
 
+        # Which named setup (Strategy Engine V2) produced the
+        # currently pending/open trade, if any - tracked alongside
+        # active_trade/pending_order exactly the same way, so a CLOSED
+        # event many bars later can still be attributed to the setup
+        # that originated it. Stays None for the old score-based
+        # engine, which never sets "setup_name" in its decision dict.
+        active_setup_name: str | None = None
+
         # Equity changes only when a trade is closed.
         # net_pnl already includes fees, so fees must
         # NOT be deducted again here.
@@ -384,6 +392,7 @@ class BacktestRunner:
             nonlocal active_trade
             nonlocal pending_order
             nonlocal current_equity
+            nonlocal active_setup_name
 
             current_time = current_candle[
                 self.timestamp_key
@@ -419,6 +428,7 @@ class BacktestRunner:
                         net_pnl=active_trade.net_pnl,
                         exit_reason=active_trade.exit_reason,
                         symbol=active_trade.symbol,
+                        setup_name=active_setup_name,
                     )
 
                     # Dynamic equity:
@@ -428,6 +438,7 @@ class BacktestRunner:
                     )
 
                     active_trade = None
+                    active_setup_name = None
 
                 # Do not close one trade and generate a new
                 # signal on the same OHLC candle.
@@ -465,9 +476,11 @@ class BacktestRunner:
                         ),
                         reason=execution_result.reason,
                         symbol=execution_result.symbol,
+                        setup_name=active_setup_name,
                     )
 
                     pending_order = None
+                    active_setup_name = None
                     return
 
                 if isinstance(
@@ -493,6 +506,7 @@ class BacktestRunner:
                         quantity=active_trade.quantity,
                         entry_fee=active_trade.entry_fee,
                         symbol=active_trade.symbol,
+                        setup_name=active_setup_name,
                     )
 
                     return
@@ -541,12 +555,20 @@ class BacktestRunner:
                 "score"
             )
 
+            # Strategy Engine V2 (Phase 2.1): which named institutional
+            # setup produced this decision, if any. Absent/None for the
+            # old score-based engine's decision dicts.
+            setup_name = decision_result.get(
+                "setup_name"
+            )
+
             journal.record_signal(
                 timestamp=current_time,
                 decision=str(decision),
                 score=score,
                 metadata=dict(decision_result),
                 symbol=self.symbol,
+                setup_name=setup_name,
             )
 
             # ---------------------------------------------
@@ -560,6 +582,7 @@ class BacktestRunner:
                     score=score,
                     metadata=dict(decision_result),
                     symbol=self.symbol,
+                    setup_name=setup_name,
                 )
 
                 return
@@ -572,6 +595,8 @@ class BacktestRunner:
                     "strategy decision must be "
                     "LONG, SHORT or IGNORE"
                 )
+
+            active_setup_name = setup_name
 
             # ---------------------------------------------
             # 5. Build trade setup
@@ -643,6 +668,7 @@ class BacktestRunner:
                         ),
                     },
                     symbol=pending_order.symbol,
+                    setup_name=active_setup_name,
                 )
 
                 return
@@ -701,6 +727,7 @@ class BacktestRunner:
                         ),
                     },
                     symbol=active_trade.symbol,
+                    setup_name=active_setup_name,
                 )
 
                 return
