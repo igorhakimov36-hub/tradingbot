@@ -14,8 +14,8 @@ class _StubCoordinator:
     def __init__(self):
         self.calls = []
 
-    def sync_and_build(self, candles_15m, current_price, timestamp):
-        self.calls.append((len(candles_15m), current_price, timestamp))
+    def sync_and_build(self, candles_15m, current_price, timestamp, reference_candles_15m=None):
+        self.calls.append((len(candles_15m), current_price, timestamp, reference_candles_15m))
         return MarketIntelligenceSnapshot(
             symbol="BTCUSDT", timeframe="15m", timestamp=timestamp, current_price=current_price,
             structure={}, zones=[], levels=[], order_flow={"delta": {}, "cvd": {}},
@@ -88,8 +88,8 @@ def test_strategy_callback_returns_ignore_when_no_setup_fires():
 
 def test_strategy_callback_enriches_decision_with_regime_and_session_context():
     class _RegimeCoordinator(_StubCoordinator):
-        def sync_and_build(self, candles_15m, current_price, timestamp):
-            snap = super().sync_and_build(candles_15m, current_price, timestamp)
+        def sync_and_build(self, candles_15m, current_price, timestamp, reference_candles_15m=None):
+            snap = super().sync_and_build(candles_15m, current_price, timestamp, reference_candles_15m)
             return MarketIntelligenceSnapshot(
                 symbol=snap.symbol, timeframe=snap.timeframe, timestamp=snap.timestamp,
                 current_price=snap.current_price,
@@ -107,6 +107,30 @@ def test_strategy_callback_enriches_decision_with_regime_and_session_context():
 
     assert result["market_structure_regime"] == "BULLISH"
     assert result["active_sessions"] == ["london"]
+
+
+def test_strategy_callback_forwards_reference_symbol_candles_to_coordinator():
+    coordinator = _StubCoordinator()
+    engine = _StubEngine(_no_fire_decision)
+    strategy_callback, _ = make_strategy_engine_v2_callbacks(engine, coordinator, reference_symbols=["ETHUSDT"])
+
+    eth_candles = [_candle(50.0)]
+    market_snapshot = {"BTCUSDT": {"15m": [_candle(100.0)]}, "ETHUSDT": {"15m": eth_candles}}
+    strategy_callback(_candle(100.0), market_snapshot)
+
+    _, _, _, reference_candles_15m = coordinator.calls[0]
+    assert reference_candles_15m == {"ETHUSDT": eth_candles}
+
+
+def test_strategy_callback_omits_reference_symbol_when_not_present_in_market_snapshot():
+    coordinator = _StubCoordinator()
+    engine = _StubEngine(_no_fire_decision)
+    strategy_callback, _ = make_strategy_engine_v2_callbacks(engine, coordinator, reference_symbols=["ETHUSDT"])
+
+    strategy_callback(_candle(100.0), {"BTCUSDT": {"15m": [_candle(100.0)]}})
+
+    _, _, _, reference_candles_15m = coordinator.calls[0]
+    assert reference_candles_15m == {}
 
 
 def test_strategy_callback_returns_fired_setup_decision():

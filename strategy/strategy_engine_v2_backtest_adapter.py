@@ -52,7 +52,20 @@ def make_strategy_engine_v2_callbacks(
     candle_timeframe_key: str = "15m",
     timestamp_key: str = "timestamp",
     risk_percent: float = 1.0,
+    reference_symbols: list[str] | None = None,
 ) -> tuple[Callable[..., dict[str, Any]], Callable[..., TradeSetup]]:
+    """
+    reference_symbols (optional, defaults to none - fully backward
+    compatible): symbol name(s) also attached to BacktestRunner via
+    provider_specs (e.g. "ETHUSDT") whose candle history should be
+    forwarded to the coordinator's `reference_candles_15m` so an
+    intermarket-configured Coordinator (see Step 0's `smt_pairs` wiring)
+    actually receives real reference data during a backtest, instead of
+    an intermarket-aware setup's SMT check structurally never having
+    anything to evaluate. A coordinator with no smt_pairs configured
+    simply ignores whatever is passed here, exactly as it always has.
+    """
+
     last_fired: dict[str, SetupResult | None] = {"result": None}
 
     def strategy_callback(
@@ -72,10 +85,17 @@ def make_strategy_engine_v2_callbacks(
                 "additional_evidence": [],
             }
 
+        reference_candles_15m = {
+            symbol: market_snapshot[symbol][candle_timeframe_key]
+            for symbol in (reference_symbols or [])
+            if symbol in market_snapshot and market_snapshot[symbol].get(candle_timeframe_key)
+        }
+
         snapshot = coordinator.sync_and_build(
             candles_15m,
             current_price=current_candle["close"],
             timestamp=candles_15m[-1][timestamp_key],
+            reference_candles_15m=reference_candles_15m,
         )
 
         decision = engine.decide(snapshot)

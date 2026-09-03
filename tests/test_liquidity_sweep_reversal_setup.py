@@ -105,8 +105,9 @@ def test_ignores_non_liquidity_pool_zones():
 def test_buy_side_sweep_with_bearish_exhaustion_fires_short():
     swept = _zone(direction="buy_side", resolved_at=START)
     cvd = {"daily": {"cvd_exhaustion_flag": "bearish_exhaustion", "price_cvd_divergence_flag": "none"}}
+    structure = {"choch": "BEARISH_CHOCH"}  # satisfies the required has_additional_confirmation condition
 
-    result = SETUP.evaluate(_snapshot(zones=[swept], cvd=cvd))
+    result = SETUP.evaluate(_snapshot(zones=[swept], cvd=cvd, structure=structure))
 
     assert result.fired is True
     assert result.direction == "SHORT"
@@ -116,8 +117,9 @@ def test_buy_side_sweep_with_bearish_exhaustion_fires_short():
 def test_sell_side_sweep_with_bullish_divergence_fires_long():
     swept = _zone(direction="sell_side", resolved_at=START)
     cvd = {"continuous": {"cvd_exhaustion_flag": "none", "price_cvd_divergence_flag": "bullish_divergence"}}
+    structure = {"choch": "BULLISH_CHOCH"}
 
-    result = SETUP.evaluate(_snapshot(zones=[swept], cvd=cvd))
+    result = SETUP.evaluate(_snapshot(zones=[swept], cvd=cvd, structure=structure))
 
     assert result.fired is True
     assert result.direction == "LONG"
@@ -133,20 +135,48 @@ def test_wrong_direction_cvd_flag_does_not_confirm():
 
 
 # =========================================================
-# Additional evidence - recorded, never gates firing
+# has_additional_confirmation - permanent required condition, added
+# after controlled experimentation (see module docstring)
 # =========================================================
 
 
-def test_additional_evidence_counted_but_not_required():
+def test_sweep_and_cvd_alone_do_not_fire_without_additional_confirmation():
     swept = _zone(direction="buy_side", resolved_at=START, raw_extra={"sources": ["equal_highs"]})  # single source
     cvd = {"daily": {"cvd_exhaustion_flag": "bearish_exhaustion"}}
-    structure = {"choch": "NO_CHOCH"}  # does not confirm
+    structure = {"choch": "NO_CHOCH"}  # does not confirm - and multi-source/SMT also unsatisfied
 
     result = SETUP.evaluate(_snapshot(zones=[swept], cvd=cvd, structure=structure))
 
-    assert result.fired is True  # still fires - additional evidence is not required
-    assert result.evidence_count == 0  # none of the 3 additional conditions satisfied
+    assert result.fired is False  # sweep + CVD alone are no longer sufficient
+    assert result.evidence_count == 0
     assert len(result.additional_evidence) == 3
+    confirmation_condition = next(c for c in result.required_conditions if c.name == "has_additional_confirmation")
+    assert confirmation_condition.satisfied is False
+
+
+def test_exactly_one_additional_confirmation_is_sufficient_to_fire():
+    swept = _zone(direction="buy_side", resolved_at=START, raw_extra={"sources": ["equal_highs"]})
+    cvd = {"daily": {"cvd_exhaustion_flag": "bearish_exhaustion"}}
+    structure = {"choch": "BEARISH_CHOCH"}  # exactly one of the three satisfied
+
+    result = SETUP.evaluate(_snapshot(zones=[swept], cvd=cvd, structure=structure))
+
+    assert result.fired is True
+    assert result.evidence_count == 1
+    confirmation_condition = next(c for c in result.required_conditions if c.name == "has_additional_confirmation")
+    assert confirmation_condition.satisfied is True
+
+
+def test_two_or_three_additional_confirmations_still_fire():
+    swept = _zone(direction="buy_side", resolved_at=START, raw_extra={"sources": ["equal_highs", "round_number"]})  # multi-source
+    cvd = {"daily": {"cvd_exhaustion_flag": "bearish_exhaustion"}}
+    structure = {"choch": "BEARISH_CHOCH"}
+    intermarket = {"btc_eth": {"structural_divergence_flag": "bearish_divergence"}}
+
+    result = SETUP.evaluate(_snapshot(zones=[swept], cvd=cvd, structure=structure, intermarket=intermarket))
+
+    assert result.fired is True
+    assert result.evidence_count == 3
 
 
 def test_choch_confirmation_increases_evidence_count():
@@ -219,9 +249,11 @@ def test_reasoning_names_the_failed_condition_when_sweep_present_but_cvd_missing
 def test_reasoning_explains_a_fired_setup():
     swept = _zone(direction="buy_side", resolved_at=START)
     cvd = {"daily": {"cvd_exhaustion_flag": "bearish_exhaustion"}}
+    structure = {"choch": "BEARISH_CHOCH"}
 
-    result = SETUP.evaluate(_snapshot(zones=[swept], cvd=cvd))
+    result = SETUP.evaluate(_snapshot(zones=[swept], cvd=cvd, structure=structure))
 
+    assert result.fired is True
     assert "SHORT" in result.reasoning
     assert "liquidity sweep reversal" in result.reasoning.lower()
 

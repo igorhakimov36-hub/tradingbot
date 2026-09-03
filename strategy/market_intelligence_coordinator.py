@@ -14,15 +14,22 @@ Wires up every SINGLE-SYMBOL module validated end-to-end in Step 1
 (Market Structure, FVG, Order Blocks, Breaker Blocks, Equal Highs/Lows,
 Session Boundaries, Liquidity Pools, Delta, CVD, Volume Profile) -
 everything the first setup (Liquidity Sweep Reversal) and any
-reasonably-adjacent future single-symbol setup would need. Intermarket
-(Correlation Engine/SMT) is deliberately NOT wired here - it needs a
-second symbol's candle stream, which the first setup does not use, and
-adding it now would be exactly the kind of complexity-for-its-own-sake
-the project has consistently avoided (Volume Profile's own Phase 1.12
-guidance: "do not introduce complexity simply to achieve feature
-completeness"). build_market_intelligence_snapshot()'s `intermarket`
-parameter already supports it - adding a second symbol's candles here
-later needs no redesign, only a few more lines in sync_and_build().
+reasonably-adjacent future single-symbol setup would need.
+
+Intermarket (Correlation Engine/SMT) - wired in Step 0 of Phase 2's
+second-setup work, per the architectural audit's finding that
+`snapshot.intermarket` was always empty because this class never
+instantiated `CorrelationTracker`. `smt_pairs` (optional, defaults to
+none configured - fully backward compatible) names which reference
+symbol(s) to compare the primary symbol against; `sync_and_build`'s
+`reference_candles_15m` supplies each reference symbol's own 15m
+candle history, keyed by symbol name (matching how BacktestRunner's
+`market_snapshot[symbol][timeframe]` is already keyed). A pair with no
+data supplied for its reference symbol simply is not synced this call -
+its CorrelationTracker stays at whatever state it last reached (its own
+initial state if never synced), matching the "honestly partial rather
+than fabricated" pattern every other module in this package already
+follows. No change to CorrelationTracker's own logic.
 
 Efficiency note (not a "do not optimize parameters" violation)
 ------------------------------------------------------------------
@@ -44,6 +51,7 @@ from datetime import datetime
 from typing import Any
 
 from strategy.features.breaker_block import BreakerBlockTracker
+from strategy.features.correlation import CorrelationTracker, SMTPair
 from strategy.features.cvd import CVDAnchor, CVDTracker
 from strategy.features.delta import DeltaTracker
 from strategy.features.equal_highs_lows import EqualLevelsTracker
@@ -80,10 +88,16 @@ class MarketIntelligenceCoordinator:
         volume_profile_bucket_size: float = 50.0,
         cvd_window: int = 20,
         timestamp_key: str = "timestamp",
+        smt_pairs: list[SMTPair] | None = None,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
         self.timestamp_key = timestamp_key
+        self._smt_pairs = smt_pairs or []
+        self._correlation_trackers = {
+            pair.name: CorrelationTracker(timeframe=timeframe, timestamp_key=timestamp_key)
+            for pair in self._smt_pairs
+        }
 
         self._market_structure = MarketStructureTracker(timeframe=timeframe, timestamp_key=timestamp_key)
         self._fair_value_gaps = FairValueGapTracker(timeframe=timeframe, timestamp_key=timestamp_key)
@@ -108,6 +122,7 @@ class MarketIntelligenceCoordinator:
         )
 
         self._last_length = 0
+        self._last_reference_lengths: dict[str, int] = {}
         self._last_snapshot: MarketIntelligenceSnapshot | None = None
 
     def sync_and_build(
@@ -115,8 +130,16 @@ class MarketIntelligenceCoordinator:
         candles_15m: list[dict[str, Any]],
         current_price: float,
         timestamp: datetime,
+        reference_candles_15m: dict[str, list[dict[str, Any]]] | None = None,
     ) -> MarketIntelligenceSnapshot:
-        if len(candles_15m) == self._last_length and self._last_snapshot is not None:
+        reference_candles_15m = reference_candles_15m or {}
+        reference_lengths = {name: len(candles) for name, candles in reference_candles_15m.items()}
+
+        if (
+            len(candles_15m) == self._last_length
+            and reference_lengths == self._last_reference_lengths
+            and self._last_snapshot is not None
+        ):
             return self._last_snapshot
 
         # Real exchange 1m data can have gaps (a missing minute) - when
@@ -155,6 +178,24 @@ class MarketIntelligenceCoordinator:
 
         session_snapshot = self._session_boundaries.snapshot()
 
+        # CorrelationTracker's own sync() is documented safe against any
+        # batch size (unlike the trackers above, its second input is
+        # another raw candle list, not a point-in-time snapshot) - so it
+        # is synced once per call with whatever full history is
+        # currently available, not folded into the one-candle-at-a-time
+        # loop above. A pair whose reference symbol has no data supplied
+        # this call is simply left unsynced.
+        for pair in self._smt_pairs:
+            reference_candles = reference_candles_15m.get(pair.reference_symbol)
+
+            if reference_candles:
+                self._correlation_trackers[pair.name].sync(candles_15m, reference_candles)
+
+        intermarket = {
+            pair.name: self._correlation_trackers[pair.name].snapshot()
+            for pair in self._smt_pairs
+        }
+
         snapshot = build_market_intelligence_snapshot(
             symbol=self.symbol,
             timeframe=self.timeframe,
@@ -170,9 +211,11 @@ class MarketIntelligenceCoordinator:
             volume_profile=self._volume_profile.snapshot(),
             delta=self._delta.snapshot(),
             cvd=self._cvd.snapshot(),
+            intermarket=intermarket,
         )
 
         self._last_length = len(candles_15m)
+        self._last_reference_lengths = reference_lengths
         self._last_snapshot = snapshot
 
         return snapshot

@@ -40,7 +40,7 @@ ABOVE price getting swept implies the up-move exhausted taking out
 resting sell-stops/breakout-buys - a SHORT setup. A sell-side pool
 (built from lows) swept implies the down-move exhausted - a LONG setup.
 
-Required conditions (BOTH must be true to fire)
+Required conditions (ALL must be true to fire)
 --------------------------------------------------
 1. `liquidity_pool_swept_this_bar` - a Liquidity Pool zone resolved
    (swept) with `resolved_at` equal to the CURRENT snapshot's
@@ -48,9 +48,15 @@ Required conditions (BOTH must be true to fire)
    bar still sitting in the tracker's bounded history.
 2. `cvd_confirms_reversal` - ANY configured CVD anchor shows the
    matching exhaustion or divergence flag for the inferred direction.
+3. `has_additional_confirmation` - at least one of the three
+   independent confirmations below is also satisfied. Added
+   permanently after controlled experimentation (see "Permanent
+   architecture decision" below) - not part of the original design.
 
-Additional evidence (recorded, never gates firing)
-------------------------------------------------------
+Additional evidence (individually recorded; their COUNT gates
+condition 3 above, but each is still reported individually for full
+transparency, not collapsed into a single opaque flag)
+------------------------------------------------------------------------
 - `choch_confirms_direction` - Market Structure's CHOCH reading agrees.
 - `pool_has_multiple_sources` - the swept pool was itself confluence
   (more than one sub-detector agreed it was a pool), not a single weak
@@ -60,8 +66,27 @@ Additional evidence (recorded, never gates firing)
   pair is wired up - this setup does not require one).
 
 `evidence_count` is a raw count of how many of the three ABOVE were
-satisfied - descriptive statistics for the Trade Journal, never a
-weight and never part of the fire/no-fire decision.
+satisfied - still descriptive statistics for the Trade Journal, never a
+weight - but as of the permanent change below, a count of zero also
+means the setup will not fire, via `has_additional_confirmation`.
+
+Permanent architecture decision - "require >=1 additional confirmation"
+-------------------------------------------------------------------------
+Added after four controlled, single-variable experiments run against
+the original two-required-condition version on real BTCUSDT data (30
+days, 29 trades baseline). Measured result: expectancy -53.78 ->
++3.88 per trade, win rate 20.69% -> 41.67%, net profit -1,559.69 ->
++46.60 - the only one of four tested conditions (the others: disabling
+round-number-only pools, restricting to RANGE regime, tightening the
+stop to the pool's own edge) that flipped net profit positive, and the
+top-ranked measured contribution among them. Explicitly NOT a claim of
+statistical significance at this sample size (n=12 in the passing arm,
+Fisher/Mann-Whitney p-values both >0.24) - promoted because it was the
+strongest measured candidate after controlled testing, exactly the
+process this platform exists to support, not because the difference was
+proven beyond chance. If a longer backtest window later contradicts
+this, revisit it the same way it was added: through measurement, not
+intuition.
 
 If more than one Liquidity Pool was swept on the same bar (rare), the
 first one found in the snapshot's own zone ordering is used -
@@ -98,8 +123,6 @@ class LiquiditySweepReversalSetup:
         direction: Side = "SHORT" if swept_pool.direction == "buy_side" else "LONG"
 
         cvd_condition = self._cvd_confirms(snapshot, direction)
-        required = [sweep_condition, cvd_condition]
-        fired = all(c.satisfied for c in required)
 
         additional = [
             self._choch_confirms(snapshot, direction),
@@ -107,6 +130,16 @@ class LiquiditySweepReversalSetup:
             self._smt_confirms(snapshot, direction),
         ]
         evidence_count = sum(1 for c in additional if c.satisfied)
+
+        confirmation_condition = ConditionResult(
+            name="has_additional_confirmation",
+            satisfied=evidence_count >= 1,
+            detail=f"{evidence_count} of {len(additional)} additional conditions satisfied (CHOCH/multi-source/SMT)",
+            evidence={"evidence_count": evidence_count, "checked": [c.name for c in additional]},
+        )
+
+        required = [sweep_condition, cvd_condition, confirmation_condition]
+        fired = all(c.satisfied for c in required)
 
         return SetupResult(
             setup_name=self.name,
@@ -227,10 +260,10 @@ class LiquiditySweepReversalSetup:
             return f"Did not fire - failed required condition(s): {', '.join(failed)}."
 
         evidence_summary = "; ".join(f"{c.name}={'yes' if c.satisfied else 'no'}" for c in additional)
+        required_summary = " ".join(f"Required: {c.detail}." for c in required)
 
         return (
             f"{direction} - liquidity sweep reversal. "
-            f"Required: {required[0].detail}. "
-            f"Required: {required[1].detail}. "
+            f"{required_summary} "
             f"Additional evidence ({evidence_count}/{len(additional)}): {evidence_summary}."
         )

@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from strategy.features.correlation import SMTPair
 from strategy.market_intelligence_coordinator import MarketIntelligenceCoordinator
 from strategy.market_intelligence_snapshot import MarketIntelligenceSnapshot
 
@@ -26,7 +27,20 @@ def _candles(count, step_minutes=15):
     ]
 
 
-def _run_incrementally(coordinator, candles):
+def _reference_candles(count, step_minutes=15, phase_shift=3):
+    # A deliberately different (but still oscillating) price path, so
+    # the two streams are neither perfectly correlated nor identical -
+    # a more honest test of real wiring than a mirrored series.
+    return [
+        _candle(i * step_minutes, high=50 + ((i + phase_shift) % 5), low=45 + ((i + phase_shift) % 3), taker_buy_volume=2.0)
+        for i in range(count)
+    ]
+
+
+BTC_ETH_PAIR = SMTPair(name="btc_eth", primary_symbol="BTCUSDT", reference_symbol="ETHUSDT")
+
+
+def _run_incrementally(coordinator, candles, reference_candles=None):
     """
     The real usage pattern: several wired trackers (Breaker Blocks,
     Liquidity Pools, session-anchored CVD/Volume Profile) enforce
@@ -36,12 +50,25 @@ def _run_incrementally(coordinator, candles):
     adapter every 1-minute tick, and the 15m candle list it exposes
     never grows by more than one bar between consecutive ticks. Tests
     must replicate that one-candle-at-a-time cadence, not batch.
+
+    reference_candles (optional): {reference_symbol: full candle list},
+    grown in lockstep with the primary - CorrelationTracker itself does
+    not require one-at-a-time growth, but growing it incrementally here
+    lets this same helper double as the "incremental" side of a
+    batched-vs-incremental equivalence check.
     """
 
     result = None
     for n in range(1, len(candles) + 1):
         step = candles[:n]
-        result = coordinator.sync_and_build(step, current_price=step[-1]["close"], timestamp=step[-1]["timestamp"])
+        step_reference = (
+            {name: refs[:n] for name, refs in reference_candles.items()}
+            if reference_candles else None
+        )
+        result = coordinator.sync_and_build(
+            step, current_price=step[-1]["close"], timestamp=step[-1]["timestamp"],
+            reference_candles_15m=step_reference,
+        )
     return result
 
 
@@ -125,4 +152,102 @@ def test_snapshot_populates_zones_and_structure_on_real_trackers():
     assert isinstance(snapshot.levels, list)
     assert "delta" in snapshot.order_flow
     assert "cvd" in snapshot.order_flow
-    assert snapshot.intermarket == {}  # deliberately not wired for Step 2
+    assert snapshot.intermarket == {}  # default construction - no smt_pairs configured
+
+
+# =========================================================
+# Intermarket / SMT wiring (Phase 2, Step 0)
+# =========================================================
+
+
+def test_no_smt_pairs_configured_keeps_intermarket_empty_even_with_reference_data():
+    # Backward compatibility: a coordinator built the old way (no
+    # smt_pairs) must behave identically even if a caller mistakenly
+    # supplies reference_candles_15m - there is no tracker to consume it.
+    coordinator = MarketIntelligenceCoordinator(symbol="BTCUSDT", timeframe="15m")
+    candles = _candles(30)
+    reference = {"ETHUSDT": _reference_candles(30)}
+
+    snapshot = _run_incrementally(coordinator, candles, reference_candles=reference)
+
+    assert snapshot.intermarket == {}
+
+
+def test_smt_pair_produces_real_intermarket_data():
+    coordinator = MarketIntelligenceCoordinator(symbol="BTCUSDT", timeframe="15m", smt_pairs=[BTC_ETH_PAIR])
+    candles = _candles(40)
+    reference = {"ETHUSDT": _reference_candles(40)}
+
+    snapshot = _run_incrementally(coordinator, candles, reference_candles=reference)
+
+    assert "btc_eth" in snapshot.intermarket
+    pair_data = snapshot.intermarket["btc_eth"]
+    assert pair_data["bars_since_start"] == 40
+    assert pair_data["price_correlation"] is not None  # window (20) has filled
+    assert pair_data["structural_agreement"] in {"both_bullish", "both_bearish", "diverging", "insufficient_data"}
+    assert isinstance(pair_data["structural_divergence_history"], list)
+
+
+def test_missing_reference_data_leaves_pair_at_its_initial_state():
+    coordinator = MarketIntelligenceCoordinator(symbol="BTCUSDT", timeframe="15m", smt_pairs=[BTC_ETH_PAIR])
+    candles = _candles(10)
+
+    snapshot = _run_incrementally(coordinator, candles, reference_candles=None)
+
+    assert "btc_eth" in snapshot.intermarket  # the pair still appears...
+    assert snapshot.intermarket["btc_eth"]["bars_since_start"] == 0  # ...but was never actually synced
+    assert snapshot.intermarket["btc_eth"]["price_correlation"] is None
+
+
+def test_two_independent_replays_with_smt_pairs_are_deterministic():
+    candles = _candles(40)
+    reference = {"ETHUSDT": _reference_candles(40)}
+
+    replay_a = MarketIntelligenceCoordinator(symbol="BTCUSDT", timeframe="15m", smt_pairs=[BTC_ETH_PAIR])
+    replay_b = MarketIntelligenceCoordinator(symbol="BTCUSDT", timeframe="15m", smt_pairs=[BTC_ETH_PAIR])
+
+    result_a = _run_incrementally(replay_a, candles, reference_candles=reference)
+    result_b = _run_incrementally(replay_b, candles, reference_candles=reference)
+
+    assert result_a == result_b
+
+
+def test_batched_intermarket_growth_matches_incremental_replay():
+    # CorrelationTracker's own sync() is documented safe for any batch
+    # size (its inputs are raw candle lists, not point-in-time
+    # snapshots) - confirm that holds true through the Coordinator's
+    # wiring: one single batched call must equal many incremental ones.
+    candles = _candles(40)
+    reference_full = _reference_candles(40)
+
+    batched = MarketIntelligenceCoordinator(symbol="BTCUSDT", timeframe="15m", smt_pairs=[BTC_ETH_PAIR])
+    batched_result = batched.sync_and_build(
+        candles, current_price=candles[-1]["close"], timestamp=candles[-1]["timestamp"],
+        reference_candles_15m={"ETHUSDT": reference_full},
+    )
+
+    incremental = MarketIntelligenceCoordinator(symbol="BTCUSDT", timeframe="15m", smt_pairs=[BTC_ETH_PAIR])
+    incremental_result = _run_incrementally(incremental, candles, reference_candles={"ETHUSDT": reference_full})
+
+    assert batched_result == incremental_result
+
+
+def test_unchanged_reference_history_alone_does_not_bypass_cache_incorrectly():
+    # The cache key must account for reference lengths too - growing
+    # ONLY the reference stream (primary unchanged) must still trigger
+    # a rebuild, not silently return a stale snapshot missing new
+    # intermarket data.
+    coordinator = MarketIntelligenceCoordinator(symbol="BTCUSDT", timeframe="15m", smt_pairs=[BTC_ETH_PAIR])
+    candles = _candles(25)
+
+    first = coordinator.sync_and_build(
+        candles, current_price=candles[-1]["close"], timestamp=candles[-1]["timestamp"],
+        reference_candles_15m={"ETHUSDT": _reference_candles(20)},
+    )
+    second = coordinator.sync_and_build(
+        candles, current_price=candles[-1]["close"], timestamp=candles[-1]["timestamp"],
+        reference_candles_15m={"ETHUSDT": _reference_candles(25)},
+    )
+
+    assert first is not second
+    assert second.intermarket["btc_eth"]["bars_since_start"] == 25
