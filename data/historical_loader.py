@@ -33,7 +33,15 @@ def parse_timestamp(value: Any) -> datetime:
         )
 
     if isinstance(value, str):
-        return parse_timestamp(float(value))
+        try:
+            return parse_timestamp(float(value))
+        except ValueError:
+            pass
+
+        try:
+            return parse_timestamp(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError as exc:
+            raise ValueError(f"unrecognized timestamp string: {value!r}") from exc
 
     raise TypeError(f"Unsupported timestamp type: {type(value).__name__}")
 
@@ -58,28 +66,31 @@ def normalize_ohlcv_record(
     if missing:
         raise ValueError(f"Missing OHLCV fields: {missing}")
 
+    open_price = _to_float(record["open"], "open")
+    high = _to_float(record["high"], "high")
+    low = _to_float(record["low"], "low")
+    close = _to_float(record["close"], "close")
+    volume = _to_float(record["volume"], "volume")
+
+    if high < low:
+        raise ValueError(f"high ({high}) cannot be below low ({low})")
+
+    if high < open_price or high < close:
+        raise ValueError(f"high ({high}) must be >= open ({open_price}) and close ({close})")
+
+    if low > open_price or low > close:
+        raise ValueError(f"low ({low}) must be <= open ({open_price}) and close ({close})")
+
+    if volume < 0:
+        raise ValueError(f"volume cannot be negative: {volume}")
+
     normalized = {
         "timestamp": parse_timestamp(record["timestamp"]),
-        "open": _to_float(
-            record["open"],
-            "open",
-        ),
-        "high": _to_float(
-            record["high"],
-            "high",
-        ),
-        "low": _to_float(
-            record["low"],
-            "low",
-        ),
-        "close": _to_float(
-            record["close"],
-            "close",
-        ),
-        "volume": _to_float(
-            record["volume"],
-            "volume",
-        ),
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": volume,
     }
 
     # Optional: not every source provides this (older/third-party CSV
@@ -103,6 +114,10 @@ def normalize_ohlcv_records(
     normalized = [normalize_ohlcv_record(record) for record in records]
 
     normalized.sort(key=lambda candle: candle["timestamp"])
+
+    for previous, current in zip(normalized, normalized[1:]):
+        if previous["timestamp"] == current["timestamp"]:
+            raise ValueError(f"duplicate timestamp: {current['timestamp']}")
 
     return normalized
 
@@ -132,7 +147,12 @@ def load_ohlcv_csv(
         for row in reader:
 
             record = {
-                "timestamp": row["open_time"],
+                # Binance Vision monthly dumps use "open_time"; other
+                # OHLCV CSV sources may use the plainer "timestamp" -
+                # both name the same field, so accept either rather
+                # than only the one this project's own downloads happen
+                # to produce.
+                "timestamp": row["open_time"] if "open_time" in row else row["timestamp"],
                 "open": row["open"],
                 "high": row["high"],
                 "low": row["low"],

@@ -13,6 +13,18 @@ never fed real data, that is stated plainly, not smoothed over.
 
 No code was changed to produce this report.
 
+**Documentation consistency note (added during the repository integrity
+sprint, not a rewrite of the analysis below):** this audit reflects the
+codebase as it existed at the end of Phase 2.1, when `LiquiditySweepReversalSetup`
+was the only setup in existence. Two later setups changed the facts in
+specific places this document states as general, still-current claims:
+`VolumeNodeReversalSetup` (S003) now reads `snapshot.levels` (kind
+`poc`/`hvn`/`vah`/`val`), and `SmtReversalSetup` (S004) now reads
+`snapshot.intermarket` as its primary signal, with `MarketIntelligenceCoordinator`
+wired to populate it with real data (Step 0, after this audit was written).
+The specific sentences affected are flagged inline below with a
+`[SUPERSEDED]` marker; nothing else in this document was changed.
+
 ---
 
 ## PART 1 — Complete Decision Flow
@@ -194,6 +206,10 @@ and 2 more are read by the adapter for reporting only (`structure.
 market_structure`, `sessions.active_now`). Every other field — including
 the entire `levels` list, regardless of which of three trackers produced
 an entry — is computed, placed in the snapshot, and never read again.**
+`[SUPERSEDED]` As of S003, `VolumeNodeReversalSetup` reads `snapshot.levels`
+(`poc`/`hvn`/`vah`/`val` kinds) — the `levels` list is no longer universally
+unread, though this remained true for every setup that existed when this
+audit was written.
 
 ---
 
@@ -222,6 +238,12 @@ in the running system**: Zones (via Liquidity Pools only) and Order Flow
 (via CVD only). Structure contributes to evidence, never to the primary gate.
 Levels and Intermarket contribute nothing measurable today — Levels because
 nothing reads them, Intermarket because nothing feeds them.
+`[SUPERSEDED]` This was true only for `LiquiditySweepReversalSetup` in
+isolation. S003 (`VolumeNodeReversalSetup`) now gates its own required
+condition on Levels; S004 (`SmtReversalSetup`, later rejected) gated its
+required condition on Intermarket, and `MarketIntelligenceCoordinator` was
+wired (Step 0) to actually feed it real data — "nothing feeds them" no
+longer describes the current Coordinator.
 
 ---
 
@@ -424,6 +446,11 @@ low"]`, `order_flow["delta"]`, `sessions["previous_period_high_low"]`,
 `volume_profile` (the whole dict), `data_quality` (the whole dict),
 `current_price` (recomputed independently by the adapter instead). This is
 a substantial fraction of the Snapshot's total surface area.
+`[SUPERSEDED]` `levels` (`poc`/`hvn`/`vah`/`val` kinds, via S003) and
+`volume_profile["current_forming_profile"]["bucket_size"]` (also via S003)
+are now read. `structure["bos"]`, `structure["last_swing_high"/"last_swing_low"]`,
+`order_flow["delta"]`, `sessions["previous_period_high_low"]`, and
+`current_price`'s adapter-recomputation remain accurate as of this update.
 
 **Trackers producing information nobody consumes:** Fair Value Gaps, Order
 Blocks (beyond feeding Breaker Blocks), Breaker Blocks, and Volume Profile
