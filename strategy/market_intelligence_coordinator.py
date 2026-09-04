@@ -160,7 +160,10 @@ class MarketIntelligenceCoordinator:
 
             self._market_structure.sync(step)
             self._fair_value_gaps.sync(step)
-            self._order_blocks.sync(step)
+            self._order_blocks.sync(
+                step,
+                structural_break_event=self._market_structure.snapshot()["structural_break_event"],
+            )
             self._breaker_blocks.sync(step, self._order_blocks.snapshot()["mitigated"])
             self._equal_levels.sync(step)
             self._session_boundaries.sync(step)

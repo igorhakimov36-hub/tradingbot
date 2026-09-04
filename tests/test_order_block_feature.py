@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from strategy.features.market_structure_tracker import MarketStructureTracker
 from strategy.features.order_block import OrderBlock, OrderBlockTracker
 
 START = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -17,6 +18,33 @@ def _candle(minute_offset, open_, high, low, close, volume=10.0):
         "close": close,
         "volume": volume,
     }
+
+
+def sync_ob(order_block_tracker, candles, structure_tracker=None):
+    """
+    Drives candles one at a time through a companion MarketStructureTracker
+    and feeds its structural_break_event into order_block_tracker.sync()
+    for that same candle - mirrors exactly how
+    MarketIntelligenceCoordinator.sync_and_build() wires the two trackers
+    together (Module Logic Correction 2, Phase 2A). Resumes from
+    order_block_tracker's own _consumed count, so calling this repeatedly
+    with growing candle lists (incremental usage) works the same as one
+    call with the full list (single-shot usage), as long as the SAME
+    structure_tracker instance is reused/returned across calls.
+
+    Returns the (possibly freshly created) structure_tracker, so callers
+    that need incremental usage can pass it back in on the next call.
+    """
+    structure_tracker = structure_tracker or MarketStructureTracker()
+    start = order_block_tracker._consumed
+
+    for i in range(start + 1, len(candles) + 1):
+        step = candles[:i]
+        structure_tracker.sync(step)
+        event = structure_tracker.snapshot()["structural_break_event"]
+        order_block_tracker.sync(step, structural_break_event=event)
+
+    return structure_tracker
 
 
 def _bullish_setup():
@@ -63,7 +91,7 @@ def test_bullish_order_block_detected_on_bos_confirmation_bar():
     candles = _bullish_setup()
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     active = tracker.snapshot()["active"]
     assert len(active) == 1
@@ -85,7 +113,7 @@ def test_bearish_order_block_detected_on_bos_confirmation_bar():
     candles = _bearish_setup()
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     active = tracker.snapshot()["active"]
     assert len(active) == 1
@@ -101,7 +129,7 @@ def test_no_order_block_before_bos_confirms():
     candles = _bullish_setup()[:-1]  # stop one candle short of the break
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     assert tracker.snapshot()["active"] == []
 
@@ -117,7 +145,7 @@ def test_continuation_after_break_does_not_create_duplicate_order_blocks():
     ]
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     assert len(tracker.snapshot()["active"]) == 1
 
@@ -133,7 +161,7 @@ def test_partial_mitigation_and_first_touch():
     ]
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     ob = tracker.snapshot()["active"][0]
     assert ob["mitigation_status"] == "partially_mitigated"
@@ -148,7 +176,7 @@ def test_continuous_dip_counts_as_a_single_touch():
     ]
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     ob = tracker.snapshot()["active"][0]
     assert ob["touch_count"] == 1
@@ -162,7 +190,7 @@ def test_separate_dips_count_as_two_touches():
     ]
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     ob = tracker.snapshot()["active"][0]
     assert ob["touch_count"] == 2
@@ -175,7 +203,7 @@ def test_full_mitigation_moves_order_block_to_mitigated_list():
     ]
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     snapshot = tracker.snapshot()
     assert snapshot["active"] == []
@@ -190,7 +218,7 @@ def test_mitigation_never_exceeds_100_percent():
     ]
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     ob = tracker.snapshot()["mitigated"][0]
     assert ob["mitigation_pct"] == 1.0
@@ -208,7 +236,7 @@ def test_mitigation_zone_is_the_origin_candles_body_not_its_wick():
     candles = _bullish_setup()
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     ob = tracker.snapshot()["active"][0]
     assert ob["zone_high"] == 105.0  # wick (unchanged)
@@ -277,7 +305,7 @@ def test_mitigation_zone_fully_mitigated_does_not_move_order_block_to_mitigated_
     ]
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     active = tracker.snapshot()["active"]
     assert len(active) == 1
@@ -327,10 +355,10 @@ def test_impulse_strength_grows_as_price_extends_favorably():
     candles = _bullish_setup()
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    structure = sync_ob(tracker, candles)
     at_creation = tracker.snapshot()["active"][0]["impulse_strength"]
 
-    tracker.sync(candles + [_candle(8, 111, 130, 111, 125)])
+    sync_ob(tracker, candles + [_candle(8, 111, 130, 111, 125)], structure)
     after_extension = tracker.snapshot()["active"][0]["impulse_strength"]
 
     assert at_creation == 0.0
@@ -345,7 +373,7 @@ def test_impulse_strength_is_none_without_atr():
     candles = _bullish_setup()
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     ob = tracker.snapshot()["active"][0]
     assert ob["atr_at_creation"] is not None
@@ -363,7 +391,7 @@ def test_distance_from_price_zero_when_price_inside_zone():
     ]
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     ob = tracker.snapshot()["active"][0]
     assert ob["distance_from_price"] == 0.0
@@ -373,7 +401,7 @@ def test_age_in_bars_increases_as_replay_advances():
     candles = _bullish_setup() + [_candle(8 + i, 111, 115, 110, 114) for i in range(3)]
 
     tracker = OrderBlockTracker()
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     ob = tracker.snapshot()["active"][0]
     assert ob["age_in_bars"] == 3
@@ -388,22 +416,36 @@ def test_rejects_rewound_history():
     tracker = OrderBlockTracker()
     candles = _bullish_setup()
 
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
+    # Direct sync() call (bypassing sync_ob) - exercises the tracker's
+    # own rewind guard in isolation, ahead of the one-new-candle-per-call
+    # guard (candles[:3] is SHORTER than what has already been consumed).
     with pytest.raises(ValueError):
-        tracker.sync(candles[:3])
+        tracker.sync(candles[:3], structural_break_event=None)
 
 
 def test_rejects_diverging_history():
     tracker = OrderBlockTracker()
     candles = _bullish_setup()[:5]
 
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     diverging = candles[:4] + [_candle(4, 999, 999, 999, 999)]
 
     with pytest.raises(ValueError):
-        tracker.sync(diverging)
+        tracker.sync(diverging, structural_break_event=None)
+
+
+def test_rejects_more_than_one_new_candle_per_call():
+    # structural_break_event is a point-in-time snapshot for exactly one
+    # new candle - matching LiquidityPoolTracker's own established
+    # equal_levels_snapshot/session_snapshot contract.
+    tracker = OrderBlockTracker()
+    candles = _bullish_setup()
+
+    with pytest.raises(ValueError):
+        tracker.sync(candles, structural_break_event=None)
 
 
 # =========================================================
@@ -418,11 +460,12 @@ def test_incremental_sync_matches_single_shot_sync():
     ] + [_candle(10 + i, 100, 101, 99, 100) for i in range(5)]
 
     incremental = OrderBlockTracker()
+    incremental_structure = MarketStructureTracker()
     for i in range(1, len(candles) + 1):
-        incremental.sync(candles[:i])
+        sync_ob(incremental, candles[:i], incremental_structure)
 
     single_shot = OrderBlockTracker()
-    single_shot.sync(candles)
+    sync_ob(single_shot, candles)
 
     assert incremental.snapshot() == single_shot.snapshot()
 
@@ -447,7 +490,7 @@ def test_expired_order_block_is_pruned_and_counted():
     ]
 
     tracker = OrderBlockTracker(max_age_bars=5)
-    tracker.sync(candles)
+    sync_ob(tracker, candles)
 
     snapshot = tracker.snapshot()
     assert snapshot["active"] == []
@@ -459,7 +502,7 @@ def test_mitigated_history_is_bounded():
 
     # Two independent bullish setups, each immediately fully mitigated.
     first = _bullish_setup() + [_candle(8, 111, 112, 90, 95)]
-    tracker.sync(first)
+    structure = sync_ob(tracker, first)
 
     second_start = 20
     second = [
@@ -467,7 +510,7 @@ def test_mitigated_history_is_bounded():
         for i, c in enumerate(_bullish_setup())
     ] + [_candle(second_start + 8, 311, 312, 290, 295)]
 
-    tracker.sync(first + second)
+    sync_ob(tracker, first + second, structure)
 
     assert len(tracker.snapshot()["mitigated"]) <= 1
 
@@ -482,12 +525,13 @@ def test_large_history_stays_fast_and_bounded():
     candles = [_candle(i, 100, 101, 99, 100) for i in range(candle_count)]
 
     tracker = OrderBlockTracker()
+    structure = MarketStructureTracker()
 
     start_time = time.perf_counter()
 
     step = 500
     for i in range(step, candle_count + 1, step):
-        tracker.sync(candles[:i])
+        sync_ob(tracker, candles[:i], structure)
 
     elapsed = time.perf_counter() - start_time
 

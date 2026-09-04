@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from strategy.features.breaker_block import BreakerBlockTracker
+from strategy.features.market_structure_tracker import MarketStructureTracker
 from strategy.features.order_block import OrderBlockTracker
 
 START = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -417,11 +418,16 @@ def test_wired_to_real_order_block_tracker_end_to_end():
     ]
 
     ob_tracker = OrderBlockTracker()
+    structure_tracker = MarketStructureTracker()
     breaker_tracker = BreakerBlockTracker()
 
     for i in range(1, len(candles) + 1):
         step = candles[:i]
-        ob_tracker.sync(step)
+        structure_tracker.sync(step)
+        ob_tracker.sync(
+            step,
+            structural_break_event=structure_tracker.snapshot()["structural_break_event"],
+        )
         breaker_tracker.sync(step, source_mitigated=ob_tracker.snapshot()["mitigated"])
 
     ob_snapshot = ob_tracker.snapshot()

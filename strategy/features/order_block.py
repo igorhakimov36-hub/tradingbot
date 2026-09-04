@@ -63,15 +63,15 @@ drives an Order Block's active -> mitigated transition, unchanged.
 
 Dependencies
 ------------
-Reuses strategy.market_structure.get_last_swing_levels and detect_bos
-(exactly what strategy_engine.py already uses) and the shared
-is_bullish_candle / is_bearish_candle predicates from
-strategy.features.utils - no detection logic is duplicated a second
-time. Consumed by (not built yet): Breaker Blocks (watches this
-module's `mitigated` list for freshly-fully-mitigated entries and
-re-exposes them with flipped polarity - no new plumbing required on
-this module for that to work, see Future Extension Points), Liquidity
-Pools (zone/pool confluence).
+Consumes MarketStructureTracker's `structural_break_event` snapshot
+field (Module Logic Correction 1) for new-break detection - see
+"New-Break Detection" above - and the shared is_bullish_candle /
+is_bearish_candle predicates from strategy.features.utils for origin
+selection. No detection logic is duplicated a second time. Consumed by:
+Breaker Blocks (watches this module's `mitigated` list for
+freshly-fully-mitigated entries and re-exposes them with flipped
+polarity - no new plumbing required on this module for that to work,
+see Future Extension Points), Liquidity Pools (zone/pool confluence).
 
 Replay Safety
 -------------
@@ -80,12 +80,37 @@ has actually happened - `created_at` records that confirmation bar's
 timestamp, not the origin candle's own (earlier) timestamp, which is
 preserved separately as `origin_timestamp` for provenance. You could not
 have known this candle was an Order Block until the break occurred.
-BOS is edge-triggered (a transition into BULLISH_BOS/BEARISH_BOS from a
-different state), not level-triggered, so a single structural break
-creates exactly one Order Block, not one per candle while price remains
-beyond the broken level. sync() rejects a candle history that goes
-backwards or diverges from what it has already consumed (same guard
-every tracker in this codebase uses).
+New-break detection consumes MarketStructureTracker's additive
+`structural_break_event` (Module Logic Correction 1) rather than
+re-deriving edge-triggering from a raw `bos` reading itself (Module
+Logic Correction 2, Phase 2A) - see "New-Break Detection" below for why.
+sync() rejects a candle history that goes backwards or diverges from
+what it has already consumed (same guard every tracker in this codebase
+uses), and - like LiquidityPoolTracker's equal_levels_snapshot/
+session_snapshot - accepts at most one new candle per call, since
+structural_break_event is a point-in-time snapshot, not a historical
+record.
+
+New-Break Detection (Module Logic Correction 2, Phase 2A)
+-----------------------------------------------------------
+Previously this tracker re-derived "did a break just happen" itself, by
+comparing consecutive raw `bos` readings it computed independently
+(`bos != "NO_BOS" and bos != self._last_bos_state`). This collapsed a
+sustained trend that broke several distinct structural levels in
+sequence - without ever returning to NO_BOS in between - into a single
+detected break, because the comparison only distinguished *direction*,
+not *which specific level* was broken (confirmed defect, see
+docs/module_correction2_order_block_report.md). It now instead consumes
+the `structural_break_event` its caller passes into `sync()` -
+MarketStructureTracker's own additive, one-shot, per-pivot-identity
+event (Module Logic Correction 1) - and creates at most one Order Block
+per event. Since that event is already proven one-shot per distinct
+pivot upstream, this tracker needs no separate consumption-tracking of
+its own: "event is not None this bar" is the entire, sufficient trigger
+condition. `previous_swing_high`/`previous_swing_low`/`bos` are no
+longer computed independently here at all - removing a second,
+redundant computation of exactly what MarketStructureTracker already
+computes, not just fixing the comparison.
 
 Live Trading
 ------------
@@ -100,19 +125,35 @@ Computational Complexity
 O(structure_lookback) per new candle for swing-level/BOS recomputation -
 matching strategy_engine.py's existing, already-validated approach
 (bounded rescanning, not a full unbounded history scan). Origin-candle
-search is a reversed scan of the same bounded window, short-circuiting
-on the first match. Mitigation/touch/impulse updates are O(k) where k =
-currently active Order Blocks, bounded by age-based pruning.
+search is a reversed scan of the bounded impulse leg (Phase 2B), not
+the full recent-candle window - short-circuiting on the first match,
+and never scanning further back than the leg boundary regardless of
+whether a match is found there.
+
+Origin-Candle Search: Impulse-Leg Boundary (Module Logic Correction 2,
+Phase 2B)
+------------------------------------------------------------------------
+Previously `_find_last_opposite_candle` scanned the ENTIRE
+`structure_lookback` window (up to 500 candles), which could select an
+economically unrelated candle from prior, already-used structure if the
+actual impulse leg contained no opposite-colored candle at all (e.g., a
+long same-direction momentum run) - confirmed defect, see
+docs/module_correction2_order_block_report.md. It now bounds the search
+to the leg between the broken structural pivot's OWN candle (inclusive)
+and the current (breaking) candle - using
+`structural_break_event.pivot_timestamp` directly, the exact same pivot
+identity Module Logic Correction 1 already established, rather than
+re-deriving it independently. See `_find_impulse_leg`'s own docstring
+for why this boundary was chosen over the other candidate considered
+(the most recent OPPOSING-direction swing pivot) - the latter failed to
+reproduce this codebase's own established reference case. If the pivot
+candle cannot be located in the current window, the leg cannot be
+determined and no Order Block is created for that event - the same,
+already-existing conservative behavior as "no opposite-colored candle
+found" (`origin is None`), not a new failure mode.
 
 Known Limitations / Future Extension Points
 --------------------------------------------
-- BOS edge-triggering can reset if a new swing pivot forms above/below
-  the current break level before price reverses - detect_bos itself
-  re-evaluates against whatever the current swing level is, so this is
-  an existing property of the underlying primitive (already true of
-  strategy_engine.py's usage today), not something newly introduced
-  here. Documented rather than silently patched, since detect_bos is
-  explicitly frozen/out of scope.
 - impulse_strength measures the furthest favorable excursion since
   creation, normalized by the ATR measured at creation time - it grows
   as the move continues and is never capped, unlike mitigation_pct.
@@ -133,6 +174,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Literal
 
+from strategy.features.market_structure_tracker import StructuralBreakEvent
 from strategy.features.utils import (
     AverageTrueRangeTracker,
     is_bearish_candle,
@@ -146,11 +188,9 @@ from strategy.features.zone_lifecycle import (
     mitigation_status_from_pct,
     update_favorable_extreme,
 )
-from strategy.market_structure import detect_bos, get_last_swing_levels
 
 Direction = Literal["bullish", "bearish"]
 MitigationStatus = Literal["unmitigated", "partially_mitigated", "fully_mitigated"]
-BosState = Literal["NO_BOS", "BULLISH_BOS", "BEARISH_BOS"]
 
 DEFAULT_STRUCTURE_LOOKBACK = 500  # matches strategy_engine.py's STRUCTURE_LOOKBACK
 DEFAULT_ATR_PERIOD = 14
@@ -166,6 +206,54 @@ def _find_last_opposite_candle(
     for candle in reversed(candles):
         if is_opposite(candle):
             return candle
+
+    return None
+
+
+def _find_impulse_leg(
+    recent_candles: list[dict[str, Any]],
+    structural_break_event: StructuralBreakEvent,
+    timestamp_key: str,
+) -> list[dict[str, Any]] | None:
+    """
+    Bounds origin-candle search to the leg between the broken
+    structural pivot's OWN candle (inclusive) and the current, breaking
+    candle (exclusive) - see module docstring "Origin-Candle Search:
+    Impulse-Leg Boundary" (Module Logic Correction 2, Phase 2B).
+
+    Uses `structural_break_event.pivot_timestamp` directly - the exact
+    same pivot identity Module Logic Correction 1 already established -
+    rather than re-deriving the pivot independently. An earlier design
+    bounded the leg to the most recent OPPOSING-direction swing pivot
+    instead; this was rejected after it failed to reproduce the
+    already-established origin candle for this codebase's own canonical
+    reference case (a swing high followed by a brief consolidation
+    before the actual breakout - the consolidation's own most recent
+    opposing-direction fractal pivot sits AFTER the origin candle,
+    incorrectly excluding it). Anchoring to the broken pivot's own
+    candle instead is directly, causally tied to the specific level
+    being broken - any opposite-colored candle between that level's
+    formation and its eventual break represents genuine positioning
+    against this specific breakout, which is the concept an Order Block
+    is meant to capture - and it reproduces every already-established
+    reference case exactly.
+
+    `recent_candles` is the tracker's own already-point-in-time-safe
+    window, including the current (breaking) candle as its last
+    element - exactly what `_detect_new_order_block` already has.
+
+    Returns None if the pivot candle cannot be located in the current
+    window - defensive only; both trackers are fed identical candle
+    histories in lockstep by their caller, so this should not occur in
+    normal operation, but is treated as "no leg -> no Order Block", the
+    same conservative behavior as "no opposite-colored candle found".
+    """
+
+    pivot_timestamp = structural_break_event.pivot_timestamp
+
+    for index, candle in enumerate(recent_candles):
+        if candle[timestamp_key] == pivot_timestamp:
+            return recent_candles[index:-1]
 
     return None
 
@@ -325,7 +413,6 @@ class OrderBlockTracker:
 
         self._bar_index = -1
         self._expired_count = 0
-        self._last_bos_state: BosState = "NO_BOS"
 
         self._active: list[OrderBlock] = []
         self._mitigated: list[OrderBlock] = []
@@ -343,11 +430,36 @@ class OrderBlockTracker:
         self._snapshot_cache: dict[str, Any] | None = None
         self._snapshot_cache_bar_index: int | None = None
 
-    def sync(self, candles: list[dict[str, Any]]) -> None:
+    def sync(
+        self,
+        candles: list[dict[str, Any]],
+        structural_break_event: StructuralBreakEvent | None,
+    ) -> None:
+        """
+        structural_break_event is MarketStructureTracker's own
+        point-in-time snapshot field for the SAME new candle being
+        ingested here (its caller is expected to sync()
+        MarketStructureTracker first and pass its resulting snapshot
+        value straight through - exactly how MarketIntelligenceCoordinator
+        wires equal_levels_snapshot/session_snapshot into
+        LiquidityPoolTracker). Like those, it is a point-in-time
+        snapshot, not a historical record, so a single call is only
+        allowed to advance by exactly one new candle.
+        """
+
         if len(candles) < self._consumed:
             raise ValueError(
                 "candles went backwards - OrderBlockTracker does not "
                 "support rewinding"
+            )
+
+        if len(candles) - self._consumed > 1:
+            raise ValueError(
+                "OrderBlockTracker.sync() can only advance by one new "
+                "candle per call - structural_break_event is a "
+                "point-in-time snapshot, not a historical record, so "
+                "batching multiple new candles behind a single event "
+                "would misattribute when the break actually occurred"
             )
 
         if self._consumed > 0:
@@ -360,11 +472,15 @@ class OrderBlockTracker:
                 )
 
         for candle in candles[self._consumed:]:
-            self._ingest(candle)
+            self._ingest(candle, structural_break_event)
 
         self._consumed = len(candles)
 
-    def _ingest(self, candle: dict[str, Any]) -> None:
+    def _ingest(
+        self,
+        candle: dict[str, Any],
+        structural_break_event: StructuralBreakEvent | None,
+    ) -> None:
         self._bar_index += 1
 
         self._update_active(candle)
@@ -374,7 +490,7 @@ class OrderBlockTracker:
         if len(self._recent_candles) > self._structure_lookback:
             self._recent_candles.pop(0)
 
-        self._detect_new_order_block()
+        self._detect_new_order_block(structural_break_event)
 
         # ATR reflects volatility up to (not including) this candle -
         # ingest_one() is O(1), never reconstructs a growing list.
@@ -411,40 +527,29 @@ class OrderBlockTracker:
 
         self._active = still_active
 
-    def _detect_new_order_block(self) -> None:
+    def _detect_new_order_block(
+        self,
+        structural_break_event: StructuralBreakEvent | None,
+    ) -> None:
         if len(self._recent_candles) < MINIMUM_CANDLES_FOR_DETECTION:
             return
 
-        highs = [c["high"] for c in self._recent_candles]
-        lows = [c["low"] for c in self._recent_candles]
-        current_candle = self._recent_candles[-1]
-
-        previous_swing_high, previous_swing_low = get_last_swing_levels(
-            highs[:-1],
-            lows[:-1],
-        )
-
-        bos = detect_bos(
-            current_candle["close"],
-            previous_swing_high,
-            previous_swing_low,
-        )
-
-        is_new_break = bos != "NO_BOS" and bos != self._last_bos_state
-        self._last_bos_state = bos
-
-        if not is_new_break:
+        if structural_break_event is None:
             return
 
-        leg = self._recent_candles[:-1]
+        current_candle = self._recent_candles[-1]
+        direction: Direction = structural_break_event.direction
+
+        leg = _find_impulse_leg(self._recent_candles, structural_break_event, self.timestamp_key)
+        if leg is None:
+            return
+
         atr = self._atr.current()
 
-        if bos == "BULLISH_BOS":
+        if direction == "bullish":
             origin = _find_last_opposite_candle(leg, is_bearish_candle)
-            direction: Direction = "bullish"
         else:
             origin = _find_last_opposite_candle(leg, is_bullish_candle)
-            direction = "bearish"
 
         if origin is None:
             return

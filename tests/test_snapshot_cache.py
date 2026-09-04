@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from strategy.features.equal_highs_lows import EqualLevelsTracker
 from strategy.features.liquidity_pool import LiquidityPoolTracker
+from strategy.features.market_structure_tracker import MarketStructureTracker
 from strategy.features.order_block import OrderBlockTracker
 
 START = datetime(2024, 1, 1, tzinfo=timezone.utc)
@@ -63,6 +64,24 @@ def _bearish_ob_setup():
     ]
 
 
+def sync_ob(order_block_tracker, candles, structure_tracker=None):
+    """Same helper as test_order_block_feature.py's own sync_ob - drives
+    a companion MarketStructureTracker in lockstep and feeds its
+    structural_break_event into order_block_tracker.sync(), mirroring
+    MarketIntelligenceCoordinator's real wiring (Module Logic Correction
+    2, Phase 2A)."""
+    structure_tracker = structure_tracker or MarketStructureTracker()
+    start = order_block_tracker._consumed
+
+    for i in range(start + 1, len(candles) + 1):
+        step = candles[:i]
+        structure_tracker.sync(step)
+        event = structure_tracker.snapshot()["structural_break_event"]
+        order_block_tracker.sync(step, structural_break_event=event)
+
+    return structure_tracker
+
+
 # =========================================================
 # OrderBlockTracker
 # =========================================================
@@ -70,7 +89,7 @@ def _bearish_ob_setup():
 
 def test_order_block_repeated_snapshot_no_state_change_is_stable():
     tracker = OrderBlockTracker()
-    tracker.sync(_bullish_ob_setup())
+    sync_ob(tracker, _bullish_ob_setup())
 
     first = tracker.snapshot()
     second = tracker.snapshot()
@@ -82,7 +101,7 @@ def test_order_block_repeated_snapshot_no_state_change_is_stable():
 
 def test_order_block_cache_hit_equals_fresh_rebuild():
     tracker = OrderBlockTracker()
-    tracker.sync(_bullish_ob_setup())
+    sync_ob(tracker, _bullish_ob_setup())
 
     cached = tracker.snapshot()
     fresh = tracker._build_snapshot()
@@ -94,11 +113,11 @@ def test_order_block_snapshot_updates_after_new_state():
     tracker = OrderBlockTracker()
     candles = _bullish_ob_setup()
 
-    tracker.sync(candles[:7])  # before BOS confirms
+    structure = sync_ob(tracker, candles[:7])  # before BOS confirms
     before = tracker.snapshot()
     assert before["active"] == []
 
-    tracker.sync(candles)  # BOS confirms on the 8th candle
+    sync_ob(tracker, candles, structure)  # BOS confirms on the 8th candle
     after = tracker.snapshot()
     assert len(after["active"]) == 1
 
@@ -106,28 +125,28 @@ def test_order_block_snapshot_updates_after_new_state():
 def test_order_block_touch_count_change_is_reflected():
     tracker = OrderBlockTracker()
     candles = _bullish_ob_setup()
-    tracker.sync(candles)
+    structure = sync_ob(tracker, candles)
     assert tracker.snapshot()["active"][0]["touch_count"] == 0
 
     # A candle re-entering the OB zone [101, 105]
     touching = candles + [_candle(8, 103, 104, 102, 103)]
-    tracker.sync(touching)
+    sync_ob(tracker, touching, structure)
     assert tracker.snapshot()["active"][0]["touch_count"] == 1
 
 
 def test_order_block_mitigation_progression_is_reflected():
     tracker = OrderBlockTracker()
     candles = _bullish_ob_setup()
-    tracker.sync(candles)
+    structure = sync_ob(tracker, candles)
 
     partial = candles + [_candle(8, 103, 104, 103, 103)]  # wick to 103, mid-zone
-    tracker.sync(partial)
+    sync_ob(tracker, partial, structure)
     mid = tracker.snapshot()["active"][0]
     assert 0.0 < mid["mitigation_pct"] < 1.0
     assert mid["mitigation_status"] == "partially_mitigated"
 
     full = partial + [_candle(9, 103, 104, 100, 103)]  # wick to 100 = zone_low
-    tracker.sync(full)
+    sync_ob(tracker, full, structure)
     snap = tracker.snapshot()
     assert snap["active"] == []
     assert len(snap["mitigated"]) == 1
@@ -144,7 +163,7 @@ def test_order_block_multiple_active_objects_both_reflected():
         _candle(11, 102, 103, 90, 91),
         _candle(12, 91, 92, 85, 86),  # breaks below a swing low -> BEARISH_BOS
     ]
-    tracker.sync(combined)
+    sync_ob(tracker, combined)
     snap = tracker.snapshot()
     total = len(snap["active"]) + len(snap["mitigated"])
     assert total >= 1  # at minimum the original bullish OB persists; exact count not the point here
@@ -156,11 +175,11 @@ def test_order_block_multiple_active_objects_both_reflected():
 def test_order_block_pruning_reflected_in_snapshot():
     tracker = OrderBlockTracker(max_age_bars=2)
     candles = _bullish_ob_setup()
-    tracker.sync(candles)
+    structure = sync_ob(tracker, candles)
     assert len(tracker.snapshot()["active"]) == 1
 
     aged = candles + [_candle(8 + i, 103, 104, 102, 103) for i in range(5)]
-    tracker.sync(aged)
+    sync_ob(tracker, aged, structure)
     snap = tracker.snapshot()
     assert snap["active"] == []
     assert snap["expired_count"] >= 1
@@ -168,7 +187,7 @@ def test_order_block_pruning_reflected_in_snapshot():
 
 def test_order_block_bearish_symmetry():
     tracker = OrderBlockTracker()
-    tracker.sync(_bearish_ob_setup())
+    sync_ob(tracker, _bearish_ob_setup())
     snap = tracker.snapshot()
     assert len(snap["active"]) == 1
     assert snap["active"][0]["direction"] == "bearish"
@@ -184,14 +203,14 @@ def test_order_block_empty_state_snapshot():
 
 def test_order_block_determinism_across_many_calls():
     tracker = OrderBlockTracker()
-    tracker.sync(_bullish_ob_setup())
+    sync_ob(tracker, _bullish_ob_setup())
     results = [tracker.snapshot() for _ in range(20)]
     assert all(r == results[0] for r in results)
 
 
 def test_order_block_mutating_returned_snapshot_does_not_corrupt_tracker():
     tracker = OrderBlockTracker()
-    tracker.sync(_bullish_ob_setup())
+    sync_ob(tracker, _bullish_ob_setup())
 
     snap = tracker.snapshot()
     snap["active"][0]["context"]["poisoned"] = True
@@ -206,7 +225,7 @@ def test_order_block_mutating_returned_snapshot_does_not_corrupt_tracker():
 
 def test_order_block_mutating_one_snapshot_does_not_alter_a_later_one():
     tracker = OrderBlockTracker()
-    tracker.sync(_bullish_ob_setup())
+    sync_ob(tracker, _bullish_ob_setup())
 
     first = tracker.snapshot()
     first["active"][0]["touch_count"] = -999
@@ -217,7 +236,7 @@ def test_order_block_mutating_one_snapshot_does_not_alter_a_later_one():
 
 def test_order_block_two_callers_do_not_affect_each_other():
     tracker = OrderBlockTracker()
-    tracker.sync(_bullish_ob_setup())
+    sync_ob(tracker, _bullish_ob_setup())
 
     caller_a = tracker.snapshot()
     caller_b = tracker.snapshot()
