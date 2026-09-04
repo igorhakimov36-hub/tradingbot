@@ -12,6 +12,7 @@ from backtesting.execution_simulator import (
     RejectedOrder,
     SimulatedTrade,
 )
+from backtesting.exit_policy import ExitPolicy
 from backtesting.replay_engine import ReplayEngine
 from backtesting.trade_journal import TradeJournal
 from backtesting.window_manager import WindowManager
@@ -298,10 +299,22 @@ class BacktestRunner:
         ],
         execution_config: ExecutionConfig | None = None,
         initial_equity: float = 10_000.0,
+        exit_policy: ExitPolicy | None = None,
     ) -> BacktestResult:
 
         """
         Run a complete strategy simulation.
+
+        exit_policy (optional, defaults to None - fully backward
+        compatible): when provided, applies any pending adjustment from
+        the previous bar BEFORE this bar's stop/target check (so this
+        candle is always processed using the levels active at its
+        open), then - only if the trade is still open - evaluates the
+        current candle to decide a new pending adjustment for the NEXT
+        bar. See backtesting/exit_policy.py for the full two-phase
+        contract. When None (the default), the snapshot-while-open-trade
+        branch is never taken and process_candle() runs exactly as
+        before - existing callers and existing reports are unaffected.
 
         strategy_callback receives:
 
@@ -404,6 +417,18 @@ class BacktestRunner:
 
             if active_trade is not None:
 
+                # Next-bar activation (causally valid): any adjustment
+                # an exit_policy decided from a PREVIOUS bar's close is
+                # applied here, BEFORE this bar's own stop/target check
+                # - i.e. this candle is always processed using the
+                # levels already active at its open. A decision made
+                # from THIS bar's own high/low (below) can only ever
+                # affect a bar that has not happened yet.
+                if exit_policy is not None:
+                    exit_policy.apply_pending(
+                        trade=active_trade,
+                    )
+
                 was_open = active_trade.is_open
 
                 active_trade = simulator.process_candle(
@@ -439,6 +464,33 @@ class BacktestRunner:
 
                     active_trade = None
                     active_setup_name = None
+
+                    # The trade exited on this same candle whose data
+                    # would otherwise inform a new decision - explicitly
+                    # no evaluation happens for it: there is no future
+                    # bar left for a pending adjustment to apply to, and
+                    # the position that closed already used only the
+                    # levels active at this candle's open (see above).
+                    return
+
+                if exit_policy is not None:
+
+                    exit_context = ReplayContext(
+                        current_time=current_time,
+                        current_candle=current_candle,
+                        visible_history_1m=visible_history_1m,
+                    )
+
+                    exit_market_snapshot = self._build_market_snapshot(
+                        context=exit_context,
+                        providers=providers,
+                    )
+
+                    exit_policy.evaluate(
+                        trade=active_trade,
+                        current_candle=current_candle,
+                        market_snapshot=exit_market_snapshot,
+                    )
 
                 # Do not close one trade and generate a new
                 # signal on the same OHLC candle.
