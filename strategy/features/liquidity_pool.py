@@ -170,6 +170,8 @@ from datetime import datetime
 from math import ceil, floor
 from typing import Any, Literal
 
+from strategy.features.zone_lifecycle import copy_snapshot_dict
+
 from strategy.features.utils import AverageTrueRangeTracker
 
 Direction = Literal["buy_side", "sell_side"]
@@ -352,6 +354,15 @@ class LiquidityPoolTracker:
 
         self._active: list[LiquidityPool] = []
         self._swept: list[LiquidityPool] = []
+
+        # Snapshot cache (Sprint 1B, performance-only) - see the
+        # identical, more fully-commented pattern in
+        # strategy/features/order_block.py. _bar_index already
+        # increments exactly once per _ingest() call and snapshot()
+        # takes no external arguments, so caching keyed on it alone is
+        # exact.
+        self._snapshot_cache: dict[str, Any] | None = None
+        self._snapshot_cache_bar_index: int | None = None
 
         self._seen_eqh_keys: set[tuple[Any, Any]] = set()
         self._seen_eql_keys: set[tuple[Any, Any]] = set()
@@ -575,6 +586,13 @@ class LiquidityPoolTracker:
                 pending.pop(0)
 
     def snapshot(self) -> dict[str, Any]:
+        if self._snapshot_cache is None or self._snapshot_cache_bar_index != self._bar_index:
+            self._snapshot_cache = self._build_snapshot()
+            self._snapshot_cache_bar_index = self._bar_index
+
+        return copy_snapshot_dict(self._snapshot_cache)
+
+    def _build_snapshot(self) -> dict[str, Any]:
         if self._last_candle is None:
             return {
                 "active": [],

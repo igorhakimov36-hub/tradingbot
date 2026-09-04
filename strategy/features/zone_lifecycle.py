@@ -18,6 +18,50 @@ Direction = Literal["bullish", "bearish"]
 MitigationStatus = Literal["unmitigated", "partially_mitigated", "fully_mitigated"]
 
 
+def copy_snapshot_dict(cached: dict[str, Any]) -> dict[str, Any]:
+    """
+    A fast, purpose-built independent copy of a tracker snapshot()
+    dict, for callers that cache their pre-built snapshot and must
+    still hand out a fully mutation-isolated copy on every call
+    (Sprint 1B, performance-only).
+
+    Deliberately NOT copy.deepcopy(): measured directly (profiling a
+    real 2-month backtest) to be catastrophically expensive at this
+    object count - 400+ million internal calls, a ~7.5x REGRESSION
+    versus not caching at all, because deepcopy's generic, memo-
+    tracking, type-dispatch machinery pays large per-object overhead
+    that a snapshot dict's actual shape never needs.
+
+    Every tracker's snapshot() has the identical shape this assumes:
+    a flat top-level dict whose list-valued entries ("active",
+    "mitigated", "swept", "equal_highs", "equal_lows", ...) each hold
+    flat per-object dicts of primitives (float/str/datetime/None) with
+    exactly one nested mutable field, "context" (a dict). This copies
+    exactly that shape - new top-level dict, new lists, new per-object
+    dicts, new context dicts - without walking arbitrary depth or
+    tracking object identity, which is what makes it fast: it is O(total
+    fields) with small constant overhead, not O(total fields) with
+    deepcopy's much larger per-field constant.
+
+    If a tracker's snapshot() shape ever changes to include a NEW
+    nested mutable field beyond "context", this function must be
+    updated too - it does not generically detect nested mutability.
+    """
+
+    result: dict[str, Any] = {}
+
+    for key, value in cached.items():
+        if isinstance(value, list):
+            result[key] = [
+                {**item, "context": dict(item["context"])} if "context" in item else dict(item)
+                for item in value
+            ]
+        else:
+            result[key] = value
+
+    return result
+
+
 def compute_mitigation(
     direction: Direction,
     zone_high: float,

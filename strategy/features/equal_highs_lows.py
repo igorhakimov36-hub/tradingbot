@@ -94,6 +94,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from strategy.features.utils import AverageTrueRangeTracker
+from strategy.features.zone_lifecycle import copy_snapshot_dict
 from strategy.market_structure import find_swing_pivots
 
 Direction = Literal["equal_highs", "equal_lows"]
@@ -214,6 +215,15 @@ class EqualLevelsTracker:
 
         self._high_clusters: list[EqualLevelCluster] = []
         self._low_clusters: list[EqualLevelCluster] = []
+
+        # Snapshot cache (Sprint 1B, performance-only) - see the
+        # identical, more fully-commented pattern in
+        # strategy/features/order_block.py. _bar_index already
+        # increments exactly once per _ingest() call and snapshot()
+        # takes no external arguments, so caching keyed on it alone is
+        # exact.
+        self._snapshot_cache: dict[str, Any] | None = None
+        self._snapshot_cache_bar_index: int | None = None
 
     def sync(self, candles: list[dict[str, Any]]) -> None:
         if len(candles) < self._consumed:
@@ -367,6 +377,13 @@ class EqualLevelsTracker:
             pivots.pop(0)
 
     def snapshot(self) -> dict[str, Any]:
+        if self._snapshot_cache is None or self._snapshot_cache_bar_index != self._bar_index:
+            self._snapshot_cache = self._build_snapshot()
+            self._snapshot_cache_bar_index = self._bar_index
+
+        return copy_snapshot_dict(self._snapshot_cache)
+
+    def _build_snapshot(self) -> dict[str, Any]:
         if self._last_candle is None:
             return {
                 "equal_highs": [],

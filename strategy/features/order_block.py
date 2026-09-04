@@ -141,6 +141,7 @@ from strategy.features.utils import (
 from strategy.features.zone_lifecycle import (
     compute_impulse_strength,
     compute_mitigation,
+    copy_snapshot_dict,
     is_touching_zone,
     mitigation_status_from_pct,
     update_favorable_extreme,
@@ -329,6 +330,19 @@ class OrderBlockTracker:
         self._active: list[OrderBlock] = []
         self._mitigated: list[OrderBlock] = []
 
+        # Snapshot cache (Sprint 1B, performance-only): every output-
+        # visible field snapshot() reads (_bar_index, _last_candle,
+        # _active, _mitigated, _expired_count) changes ONLY inside
+        # _ingest() - _bar_index itself already increments exactly once
+        # per _ingest() call, so it is a free, already-existing version
+        # number. snapshot() takes no external arguments (in particular,
+        # NOT the live per-1-minute-bar current_price - it reads
+        # self._last_candle["close"], which only advances on ingest),
+        # so caching keyed on _bar_index alone is exact, not an
+        # approximation. See docs/sprint1b_snapshot_cache_report.md.
+        self._snapshot_cache: dict[str, Any] | None = None
+        self._snapshot_cache_bar_index: int | None = None
+
     def sync(self, candles: list[dict[str, Any]]) -> None:
         if len(candles) < self._consumed:
             raise ValueError(
@@ -452,6 +466,20 @@ class OrderBlockTracker:
         )
 
     def snapshot(self) -> dict[str, Any]:
+        if self._snapshot_cache is None or self._snapshot_cache_bar_index != self._bar_index:
+            self._snapshot_cache = self._build_snapshot()
+            self._snapshot_cache_bar_index = self._bar_index
+
+        # Always hand out an independent copy - the cached master is
+        # never exposed directly, so a caller mutating its result can
+        # never corrupt this tracker's state, a later snapshot() call,
+        # or another caller's already-returned snapshot. Uses
+        # copy_snapshot_dict(), NOT copy.deepcopy() - see that
+        # function's own docstring for why (a measured ~7.5x
+        # regression from deepcopy's overhead at this object count).
+        return copy_snapshot_dict(self._snapshot_cache)
+
+    def _build_snapshot(self) -> dict[str, Any]:
         if self._last_candle is None:
             return {
                 "active": [],
