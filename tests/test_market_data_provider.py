@@ -78,6 +78,48 @@ def test_point_event_provider_advances_as_time_passes():
     assert snapshot["previous"]["rate"] == 0.0001
 
 
+def test_point_event_provider_sorts_unsorted_input_at_construction():
+    """records is now sorted once in __init__ (needed for the binary
+    search lookup) - must behave identically whether the caller passes
+    them in chronological order or not, matching the old
+    get_latest_two_available_records()-based implementation's
+    behavior (which was order-independent by construction)."""
+    records = [
+        {"timestamp": START + timedelta(minutes=10), "rate": 0.0002},
+        {"timestamp": START, "rate": 0.0001},
+    ]
+
+    provider = PointEventProvider("funding", records=records)
+
+    history = [_candle(15, 100.0)]
+    provider.sync(_context(15, history))
+
+    snapshot = provider.snapshot()
+    assert snapshot["current"]["rate"] == 0.0002
+    assert snapshot["previous"]["rate"] == 0.0001
+
+
+def test_point_event_provider_duplicate_timestamps_preserve_relative_order():
+    """Two records at the exact same timestamp must resolve to
+    'current'/'previous' the same way the original stable-sort-based
+    implementation did - the later-inserted record wins as 'current'."""
+    same_time = START + timedelta(minutes=5)
+    records = [
+        {"timestamp": START, "rate": 0.0001},
+        {"timestamp": same_time, "rate": 0.0002},
+        {"timestamp": same_time, "rate": 0.0003},
+    ]
+
+    provider = PointEventProvider("funding", records=records)
+
+    history = [_candle(5, 100.0)]
+    provider.sync(_context(5, history))
+
+    snapshot = provider.snapshot()
+    assert snapshot["current"]["rate"] == 0.0003
+    assert snapshot["previous"]["rate"] == 0.0002
+
+
 def test_point_event_provider_has_a_name():
     provider = PointEventProvider("open_interest", records=[])
     assert provider.name == "open_interest"

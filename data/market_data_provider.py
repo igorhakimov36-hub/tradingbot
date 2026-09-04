@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from backtesting.point_in_time import get_latest_two_available_records
+from backtesting.point_in_time import get_available_data_sorted
 from data.timeframe_manager import TimeframeManager
 
 
@@ -41,8 +41,21 @@ class MarketDataProvider(Protocol):
 class PointEventProvider:
     """
     For data that represents a single known value as of an instant
-    (Funding, Open Interest, ...). Wraps the existing, unmodified
-    get_latest_two_available_records() - no new alignment logic.
+    (Funding, Open Interest, ...).
+
+    Complexity: `records` is sorted exactly once here, in __init__,
+    and never mutated afterward - the same "sort once, immutable
+    after" contract ReplayEngine and TimeframeManager already use.
+    sync() then does an O(log n) binary-search lookup
+    (get_available_data_sorted) instead of the O(n) full rescan the
+    previous get_latest_two_available_records()-based implementation
+    performed on every single replay step - see
+    docs/phase5_strategic_roadmap_decision.md Sprint 1 for the
+    equivalence proof. Sorting once is safe regardless of whether the
+    caller's input was already ordered: Python's sort is stable, so
+    equal-timestamp records keep their original relative order either
+    way, matching get_latest_two_available_records()'s own behavior
+    exactly (verified by dedicated equivalence tests, not assumed).
     """
 
     def __init__(
@@ -52,16 +65,22 @@ class PointEventProvider:
         timestamp_key: str = "timestamp",
     ):
         self.name = name
-        self._records = records
         self._timestamp_key = timestamp_key
+        self._records = sorted(
+            records,
+            key=lambda record: record[timestamp_key],
+        )
         self._snapshot: dict[str, Any] | None = None
 
     def sync(self, context: ReplayContext) -> None:
-        current, previous = get_latest_two_available_records(
-            records=self._records,
+        available = get_available_data_sorted(
+            sorted_records=self._records,
             current_time=context.current_time,
             timestamp_key=self._timestamp_key,
         )
+
+        current = available[-1] if available else None
+        previous = available[-2] if len(available) >= 2 else None
 
         self._snapshot = {"current": current, "previous": previous}
 

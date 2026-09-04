@@ -136,6 +136,61 @@ def test_run_processes_every_record():
     assert processed[3]["visible_count"] == 4
 
 
+def test_reset_then_requery_matches_a_fresh_engine():
+    """After reset(), a new step-then-query sequence must produce
+    exactly the same visible history a brand-new engine would - the
+    binary-search lookup has no leftover cursor state that a raw
+    monotonic pointer could have left behind."""
+    engine = ReplayEngine(create_test_records())
+
+    engine.step()
+    engine.step()
+    engine.step()
+
+    engine.reset()
+
+    fresh = ReplayEngine(create_test_records())
+
+    engine.step()
+    fresh.step()
+    assert engine.get_visible_history() == fresh.get_visible_history()
+
+    engine.step()
+    fresh.step()
+    assert engine.get_visible_history() == fresh.get_visible_history()
+
+
+def test_repeated_visible_history_calls_without_stepping_are_stable():
+    engine = ReplayEngine(create_test_records())
+
+    engine.step()
+    engine.step()
+
+    first = engine.get_visible_history()
+    second = engine.get_visible_history()
+
+    assert first == second
+
+
+def test_single_record_dataset():
+    records = create_test_records()[:1]
+    engine = ReplayEngine(records)
+
+    engine.step()
+
+    visible = engine.get_visible_history()
+    assert len(visible) == 1
+    assert visible[0]["close"] == 100.0
+
+
+def test_empty_dataset_never_steps():
+    engine = ReplayEngine([])
+
+    assert engine.has_next() is False
+    assert engine.step() is None
+    assert engine.get_visible_history() == []
+
+
 def test_callback_never_sees_future_record():
     engine = ReplayEngine(create_test_records())
 

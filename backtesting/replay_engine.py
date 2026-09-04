@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Callable
 
-from backtesting.point_in_time import get_available_data
+from backtesting.point_in_time import get_available_data_sorted
 
 
 class ReplayEngine:
@@ -10,6 +10,18 @@ class ReplayEngine:
 
     At every step, the strategy can only access data
     that was available at or before the current replay time.
+
+    Complexity: get_visible_history() is O(log n) per call via binary
+    search over `self.records` (sorted once here, in __init__, and
+    never mutated afterward) - a full replay of n steps is therefore
+    O(n log n) total, not O(n^2). Previously, get_visible_history()
+    rescanned the full records list from scratch on every single step
+    (O(n) per call, O(n^2) total) - this is the specific bottleneck an
+    earlier phase of this project measured producing a ~180x slowdown
+    for a 12x larger dataset. Sprint 1 of docs/phase5_strategic_roadmap_decision.md
+    fixed this without changing any observable behavior - see that
+    document and tests/test_replay_engine_performance.py for the
+    equivalence proof and benchmark.
     """
 
     def __init__(
@@ -65,15 +77,23 @@ class ReplayEngine:
         """
         Return only data that was available up to
         the current replay time.
+
+        O(log n) via binary search (get_available_data_sorted) - safe
+        because self.records is sorted exactly once in __init__ and
+        never mutated afterward. Correct regardless of call pattern:
+        a fresh replay, a reset(), a repeated query at the same
+        current_time, or an out-of-order query all resolve correctly,
+        since this recomputes the prefix from the sorted array every
+        call rather than relying on any monotonic assumption.
         """
 
         if self.current_time is None:
             return []
 
-        return get_available_data(
-            records=self.records,
+        return get_available_data_sorted(
+            sorted_records=self.records,
             current_time=self.current_time,
-            timestamp_key=self.timestamp_key
+            timestamp_key=self.timestamp_key,
         )
 
 
