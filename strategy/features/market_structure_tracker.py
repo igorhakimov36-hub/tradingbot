@@ -101,17 +101,89 @@ Known Limitations / Future Extension Points
 - No mitigation/touch/lifecycle tracking of any kind - this tracker
   exposes point-in-time structural facts only, unlike the zone-shaped
   modules (Order Blocks, FVG, etc.) built on top of the same primitives.
+
+Structural Break Event (Module Logic Correction 1 - additive only)
+--------------------------------------------------------------------
+`bos`/`choch` above are deliberately persistent, level-based readings
+(Purpose section) - by design they say "close is CURRENTLY beyond the
+last broken level," not "a break just happened." Some future consumers
+(Order Block, in a later, separately-approved correction) need the
+latter: a causal, one-shot identity for each distinct confirmed
+structural level actually being broken, so that a sustained trend which
+never returns to NO_BOS can still be recognized as breaking several
+different levels in sequence, not just the first one.
+
+`structural_break_event` is an ADDITIVE snapshot field carrying a
+`StructuralBreakEvent | None` - present only on the bar where a
+previously-unconsumed swing/pivot is first closed beyond, `None` on
+every other bar (edge-triggered, not persistent - the opposite shape
+from `bos`/`choch` on purpose, so a consumer can never mistake a stale
+value for a fresh one). It does not replace, does not affect the
+computation of, and cannot be derived by mutating `bos`/`choch` - they
+remain computed by the exact same unchanged calls as before.
+
+Identity: (direction, pivot candle's own timestamp) - not the pivot's
+price alone, since `find_swing_pivots` already returns the pivot's
+local index within the scanned window, letting this tracker recover
+the exact originating candle (and hence its timestamp) without any
+change to strategy/market_structure.py. A pivot can fire at most one
+event per direction, tracked via a consumed-pivot set that is pruned to
+exactly the pivots still visible in `_recent_candles` every bar -
+bounding its size to the same O(structure_lookback) this tracker
+already uses everywhere else, since a pivot that has scrolled out of
+the window can never be reported as "last swing high/low" again.
+
+Crossing definition: strict close-based crossing against the level,
+identical to `detect_bos`'s own existing convention (`close > level`,
+not merely a wick beyond it, and not `close >= level`) - chosen for
+consistency with the existing persistent BOS definition, not for any
+performance reason. A pivot that is *first confirmed* on a bar where
+close is already beyond it fires immediately on that bar (this is when
+the break first becomes knowable - never backdated to the pivot's own,
+earlier candle). The alternative of requiring an edge relative to the
+previous bar's close (i.e. previous close below the level, current
+close above it) was considered and rejected: it would permanently miss
+a level that was already-broken by the time it became the tracked
+"last" pivot, violating "every distinct broken level produces exactly
+one event." A gap across the level is handled identically to a smooth
+crossing, since only the current bar's close is ever compared - no
+separate gap-detection logic exists or is needed.
 """
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
-from strategy.market_structure import detect_bos, detect_choch, detect_market_structure, get_last_swing_levels
+from strategy.market_structure import (
+    detect_bos,
+    detect_choch,
+    detect_market_structure,
+    find_swing_pivots,
+    get_last_swing_levels,
+)
 
 MarketStructureRegime = Literal["BULLISH", "BEARISH", "RANGE", "UNKNOWN"]
 BosReading = Literal["NO_BOS", "BULLISH_BOS", "BEARISH_BOS"]
 ChochReading = Literal["NO_CHOCH", "BULLISH_CHOCH", "BEARISH_CHOCH"]
+BreakDirection = Literal["bullish", "bearish"]
 
 DEFAULT_STRUCTURE_LOOKBACK = 500  # matches strategy_engine.py's STRUCTURE_LOOKBACK
+
+
+@dataclass(frozen=True)
+class StructuralBreakEvent:
+    """
+    Additive, one-shot identity for "this specific, already-confirmed
+    structural level was broken on this candle" - independent of, and
+    never a replacement for, the persistent bos/choch readings. See
+    the module docstring's "Structural Break Event" section.
+    """
+
+    direction: BreakDirection
+    level: float
+    pivot_timestamp: Any
+    confirmed_at: Any
+    confirming_close: float
+    event_id: str
 
 
 class MarketStructureTracker:
@@ -143,6 +215,9 @@ class MarketStructureTracker:
         self._last_swing_low: float | None = None
         self._bos: BosReading = "NO_BOS"
         self._choch: ChochReading = "NO_CHOCH"
+
+        self._consumed_break_pivots: set[tuple[BreakDirection, Any]] = set()
+        self._latest_structural_break_event: StructuralBreakEvent | None = None
 
     def sync(self, candles: list[dict[str, Any]]) -> None:
         if len(candles) < self._consumed:
@@ -202,7 +277,77 @@ class MarketStructureTracker:
             previous_swing_low,
         )
 
+        # Additive only: none of the fields computed above are read or
+        # affected by this block - see module docstring "Structural
+        # Break Event". Recomputes swing pivots (already computed
+        # above, inside get_last_swing_levels) a second time via
+        # find_swing_pivots purely to recover the pivot's own index,
+        # which get_last_swing_levels discards - this keeps every
+        # existing call/return path completely untouched.
+        prior_candles = self._recent_candles[:-1]
+        swing_highs, swing_lows = find_swing_pivots(highs[:-1], lows[:-1])
+
+        new_event: StructuralBreakEvent | None = None
+        if swing_highs and candle["close"] > swing_highs[-1][1]:
+            pivot_index, pivot_price = swing_highs[-1]
+            new_event = self._maybe_create_break_event(
+                direction="bullish",
+                pivot_candle=prior_candles[pivot_index],
+                pivot_price=pivot_price,
+                candle=candle,
+            )
+        elif swing_lows and candle["close"] < swing_lows[-1][1]:
+            pivot_index, pivot_price = swing_lows[-1]
+            new_event = self._maybe_create_break_event(
+                direction="bearish",
+                pivot_candle=prior_candles[pivot_index],
+                pivot_price=pivot_price,
+                candle=candle,
+            )
+
+        self._latest_structural_break_event = new_event
+        self._prune_consumed_break_pivots()
+
         self._last_candle = candle
+
+    def _maybe_create_break_event(
+        self,
+        direction: BreakDirection,
+        pivot_candle: dict[str, Any],
+        pivot_price: float,
+        candle: dict[str, Any],
+    ) -> StructuralBreakEvent | None:
+        pivot_timestamp = pivot_candle[self.timestamp_key]
+        pivot_key = (direction, pivot_timestamp)
+
+        if pivot_key in self._consumed_break_pivots:
+            return None
+
+        self._consumed_break_pivots.add(pivot_key)
+
+        event_id = f"{self._timeframe}:{direction}:{pivot_timestamp!r}"
+
+        return StructuralBreakEvent(
+            direction=direction,
+            level=pivot_price,
+            pivot_timestamp=pivot_timestamp,
+            confirmed_at=candle[self.timestamp_key],
+            confirming_close=candle["close"],
+            event_id=event_id,
+        )
+
+    def _prune_consumed_break_pivots(self) -> None:
+        # A pivot that has scrolled out of _recent_candles can never
+        # again be reported as the "last" swing high/low (find_swing_pivots
+        # only ever scans the current window) - so its consumption
+        # marker can be safely forgotten, bounding this set to the same
+        # O(structure_lookback) as everything else in this tracker.
+        window_timestamps = {c[self.timestamp_key] for c in self._recent_candles}
+        self._consumed_break_pivots = {
+            (direction, timestamp)
+            for direction, timestamp in self._consumed_break_pivots
+            if timestamp in window_timestamps
+        }
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -213,4 +358,5 @@ class MarketStructureTracker:
             "choch": self._choch,
             "timeframe": self._timeframe,
             "context": {},
+            "structural_break_event": self._latest_structural_break_event,
         }
