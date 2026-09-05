@@ -1,6 +1,31 @@
 # Exit Management Research Sprint
 ## Structure-Based Dynamic Exit Policy vs Fixed Exits (S001, S005)
 
+> ## ⚠️ SUPERSEDED — the headline tables below are NOT the current numbers
+>
+> This document is preserved as the **original, as-delivered version**
+> (v1 — first same-bar, buggy exit-timing implementation). Its own
+> "Results" tables (2024-01 / 2025-03, Section "Results") reflect that
+> **original, pre-correction** run and are kept here unedited for
+> historical record only. Two independent defects were found and fixed
+> after this report was delivered, each producing its own corrected
+> numbers:
+>
+> - **v2 — causal (same-bar → next-bar activation) correction**:
+>   [`docs/exit_management_sprint_causal_correction_addendum.md`](exit_management_sprint_causal_correction_addendum.md)
+> - **v3 — `id(trade)` state-reuse correction** (current, most
+>   authoritative numbers): [`docs/exit_management_sprint_id_reuse_correction_addendum.md`](exit_management_sprint_id_reuse_correction_addendum.md)
+> - Full audit trail and historical-artifact linkage:
+>   [`docs/id_trade_state_leakage_impact_audit_report.md`](id_trade_state_leakage_impact_audit_report.md),
+>   [`docs/exit_policy_state_isolation_impact_report.md`](exit_policy_state_isolation_impact_report.md)
+>
+> **The verdict itself did not change across any of these
+> corrections: REJECT STRUCTURE TRAIL, v3 resting on a case that is if
+> anything weaker for Policy D than this original (v1) report shows —
+> never stronger.** Use v3 (the id-reuse addendum) for any current
+> reference to this sprint's numbers; use this document only to see
+> what was originally reported and why it changed.
+
 **Question asked:** if a trade moves in our favor, can we reduce full-stop
 losses and protect profits using only confirmed market structure? The
 answer was not assumed — it was measured.
@@ -80,6 +105,11 @@ month already drawn and used for S007 — not re-drawn, per instruction).
 **Setups:** S001 only, S005 only, S001+S005. **6 A/D comparisons total.**
 
 ## Results
+
+> **[v1 — SUPERSEDED, historical only]** These tables reflect the
+> original same-bar-bug implementation. See the notice at the top of
+> this document for the current (v3) numbers in
+> `docs/exit_management_sprint_id_reuse_correction_addendum.md`.
 
 ### 2024-01
 
