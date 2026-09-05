@@ -60,6 +60,7 @@ For every item below: no change is authorized by this register. Each requires it
 - **Required tests:** a constructed stale-sweep scenario (already traced conceptually — bars 1/2/5 in the review); a real-data measurement of how often S001's actual swept-pool signals were preceded by an earlier clean break of the same zone.
 - **Dependency order:** independent of A1-A3; relevant to any future S001 re-certification or S009 design.
 - **Future acceptance/rejection criteria:** only add a sustained-acceptance invalidation rule if real data shows a measurable fraction of S001's fires are against already-broken (stale) zones, and that excluding them changes win rate/expectancy in a consistent direction across ≥2 periods.
+- **CLOSED by the Liquidity Pool Lifecycle Research Series — see Section D below.** The exact hypothesis named here (a bounded "Acceptance Pending" state, Policy C) was built, TRAIN-tested, and VALIDATION-tested on real SOL data; the corrected, reframed question ("are late-confirming sweeps materially weaker than timely ones?") was also separately tested. Net result: **do not promote — Policy A retained.** This entry is left in place as the original research-hypothesis record; D1–D3 below are the closing decision.
 
 ### B4. Single-candle sweep vs. a bounded multi-candle penetration-and-rejection state machine
 - **Evidence:** traced precisely — a 2-bar poke-then-reject pattern (Bar 1 pokes above and closes above; Bar 2 closes back below, but Bar 2's own high no longer exceeds the zone) is invisible to the current same-candle rule. Confirmed inherited consistently from `strategy/liquidity.py`'s original single-candle primitive — a deliberate, project-wide convention, not an isolated oversight.
@@ -68,6 +69,7 @@ For every item below: no change is authorized by this register. Each requires it
 - **Required tests:** a constructed multi-candle rejection scenario proving it is currently missed; if pursued, tests for whatever bounded window (a new parameter) a future state machine would introduce.
 - **Dependency order:** independent; lowest priority of the Liquidity Pool items given it requires genuinely new detection logic (a new rejection-window parameter), which this project's own standing rule treats cautiously.
 - **Future acceptance/rejection criteria:** only pursue if B3's research shows the single-candle rule is measurably missing a meaningful population of genuine rejections, not merely as a theoretical completeness improvement.
+- **Status: B3's research (Section D) did not find a measurable population of missed genuine rejections large enough to justify this** — Policy C's multi-candle bounded-window variant returned INCONCLUSIVE/KEEP-POLICY-A across both the original and reframed questions. Not pursued; left open only if future, differently-scoped evidence emerges.
 
 ### B5. Mutually exclusive BOS/CHoCH labels vs. retaining both persistent readings
 - **Evidence:** traced precisely — `detect_bos`/`detect_choch` can both independently evaluate true on the same bar whenever a break opposes the prevailing `market_structure` regime (both conditions reference the identical `close < previous_swing_low` comparison). LuxAlgo's model is mutually exclusive by construction (`tag = trend.bias == BEARISH ? CHOCH : BOS`).
@@ -116,6 +118,147 @@ These are conclusions, not open questions — each was directly compared against
 7. **Existing persistent BOS/CHoCH readings as context** — retained even as future event-based fields are considered additively (see the architectural preservation rule below); S007 explicitly and deliberately depends on the persistent (not edge-triggered) semantic.
 
 **Each item above is retained "unless evidence later rejects it," not permanently frozen** — if a future controlled experiment (e.g., under B1-B8) produces real data contradicting one of these, this section should be revised, not treated as closed forever.
+
+---
+
+## D. Liquidity Pool Lifecycle Research Series — CLOSED
+
+**Status: production decisions confirmed below.** This section closes
+out the multi-sprint Liquidity Pool lifecycle/geometry/telemetry
+research series run against real SOL TRAIN (and, where noted,
+VALIDATION/SECONDARY_VALIDATION) data. Every sprint followed the
+project's frozen-and-hashed protocol discipline; every research module
+lived under `strategy/research/` with zero production footprint,
+proven byte-identical to `strategy/features/liquidity_pool.py`'s own
+behavior in each sprint's own test suite. `strategy/features/liquidity_pool.py`
+and `strategy/setups/liquidity_sweep_reversal.py` (S001) were **not
+modified by any sprint in this series**.
+
+### Confirmed production decisions
+
+- **D1. Keep current Liquidity Pool formation and geometry.** The band
+  model (`zone_high`/`zone_low`, widened by `register_touch`) is
+  retained unchanged.
+  Evidence: `docs/liquidity_pool_wick_extremity_train_report.md`
+  (verdict: **KEEP CURRENT GEOMETRY**). A LuxAlgo-style Wick-Extremity
+  Zone ablation (anchoring the sweep boundary to a single real candle's
+  own wick instead of the production band) was built, tested, and run
+  on all 4 TRAIN months: only 5.2% of pools (263/5,040) were ever
+  geometry-eligible, the pooled primary-endpoint gap (52.2% vs. 49.8%)
+  was within noise, and only 2 of 4 months favored the alternative
+  geometry — the frozen promotion criterion (material effect **and**
+  ≥3/4 months) failed outright.
+
+- **D2. Keep lifecycle Policy A** (the existing same-candle
+  wick-beyond-then-close-back sweep rule). **Do not promote bounded
+  Acceptance Pending / Policy C** (supersedes B3's open status above).
+  Evidence, two separate controlled experiments:
+  - `docs/liquidity_pool_policy_c_validation_report.md` — pre-registered
+    SOL VALIDATION experiment on Policy C's original formulation
+    (Policy C as an *additional detector* of sweeps Policy A misses).
+    Verdict: **INCONCLUSIVE** — the core criterion was structurally
+    impossible to pass (Policy C's same-candle check is byte-identical
+    to Policy A's, so it can never detect a sweep Policy A misses,
+    confirmed at exactly 0%), even though 6 of 7 other criteria passed.
+  - `docs/liquidity_pool_staleness_secondary_validation_report.md` —
+    the corrected, reframed question ("are Policy A sweeps that only
+    confirm after 16+ bars beyond the boundary materially weaker than
+    timely ones?"), tested on 4 separately-verified-unused SECONDARY_VALIDATION
+    months. Verdict: **KEEP POLICY A** — late-confirming sweeps
+    (`LATE_RECLAIM`) were statistically indistinguishable from, or
+    better than, timely sweeps, stable across all 3 tested windows
+    (8/16/32 bars).
+  - Net decision: Policy C (in either formulation) is not promoted;
+    Policy A remains production logic.
+
+- **D3. Do not promote LuxAlgo Wick-Extremity geometry.** Same evidence
+  as D1.
+
+- **D4. Do not promote Touch Count as a filter.**
+  Evidence: `docs/liquidity_pool_touch_volume_train_report.md`. Tested
+  as an independent hypothesis (frozen buckets 0/1/2/3+ prior touch
+  episodes, candle-overlap definition) across all 4 TRAIN months
+  (n=224–2,473 pools per bucket). Pooled primary-endpoint spread was
+  1.6 percentage points (well below the frozen 5-point threshold), not
+  monotonic, and the bucket ranking reshuffled every TRAIN month
+  (same-direction-in-≥3/4-months criterion failed). Classified as a
+  confident null result, not an underpowered one, given the large
+  per-bucket sample sizes.
+
+- **D5. Do not promote normalized Volume as a filter.**
+  Evidence: same report as D4. Tested independently of Touch Count
+  (outcome-blind quartile buckets on a new causal trailing-median
+  relative-volume baseline, `lookback_minutes=240`). Pooled spread was
+  3.6 points (below threshold), U-shaped rather than monotonic, and the
+  direction of the effect **flipped** between TRAIN months. Controlling
+  for Touch Count collapsed the gap to 1.3 points; controlling for
+  source showed the 94%-majority round-number population had
+  essentially zero effect (0.04-point gap) — the only sizeable gap was
+  confined to the smallest, least-powered non-round-number subgroup,
+  disqualifying by the frozen protocol's own source-control requirement.
+
+- **D6. Do not build a combined Touch Count + Volume rule.** Per the
+  authorizing instructions for that sprint, the two were evaluated as
+  fully independent hypotheses throughout and no combined score/filter
+  was ever computed — moot now that both were independently rejected
+  (D4, D5), but recorded explicitly since it was a standing scope
+  boundary, not an afterthought.
+
+- **D7. Keep the research telemetry research-only.** Every module built
+  across this series (`strategy/research/liquidity_pool_lifecycle_policy.py`,
+  `liquidity_pool_policy_c.py`, `liquidity_pool_staleness_telemetry.py`,
+  `liquidity_pool_wick_extremity*.py`, `liquidity_pool_touch_episodes.py`,
+  `liquidity_pool_touch_volume*.py`) remains under `strategy/research/`
+  only. None is imported by `strategy/features/`, `strategy/setups/`,
+  or the live/backtest execution path. Each sprint's own test suite
+  includes a direct byte-identical-production-output proof.
+
+### Confirmed structural findings (measurements, not modeling choices)
+
+- **D8. Round Numbers dominate pool creation (94.4%) and actual sweeps
+  (94.8%) almost identically, but only 47.5% of exact-linked S001
+  trades** (vs. 94.4% of the underlying population).
+  Evidence: `docs/liquidity_pool_touch_volume_train_report.md`, Section
+  1. Traced to a specific, pre-existing mechanism: S001's own
+  `pool_has_multiple_sources` additional-evidence check
+  (`strategy/setups/liquidity_sweep_reversal.py`) structurally
+  disadvantages single-source (round-number-only) pools, which must
+  clear CHOCH or SMT confirmation alone instead of getting a "free"
+  additional-evidence point. This is a **confirmed characterization of
+  existing S001 behavior**, directly measured — not a defect (S001 was
+  explicitly out of scope for correction in that sprint) and not a
+  hypothesis.
+
+- **D9. ~5,041 pool instances correspond to only ~60–82 unique logical
+  price levels per month (~70 typical) — 99.3–99.7% of pool instances
+  are re-creations of the same recurring levels, not independent
+  events.**
+  Evidence: same report, Section 1. Recorded explicitly as an
+  **effective-sample-size and dependence caveat, not a confirmed
+  implementation defect** — `strategy/features/liquidity_pool.py`'s own
+  docstring documents this as intentional ("new orders accumulating
+  near the same price afterward are a genuinely NEW pool, not a
+  continuation of consumed liquidity"), and it was characterized, not
+  repaired, per that sprint's explicit instructions. Applies to every
+  pool-instance-count statistic produced across this entire research
+  series (this report and the Wick-Extremity report before it) — the
+  true number of independent round-number observations is a small
+  fraction of the raw pool-instance count.
+
+### Open future question
+
+- **D10. The current Liquidity Sweep module (`strategy/setups/liquidity_sweep_reversal.py`,
+  S001) is retained pending evidence from future setup-level work.**
+  This research series tested the Liquidity Pool *feature* module
+  (`strategy/features/liquidity_pool.py`) exhaustively — geometry,
+  lifecycle timing, touch count, and volume — and found no promotable
+  improvement. It did **not** test S001's own arbitration logic (the
+  CVD/CHOCH/multi-source confirmation-count gate, D8's own mechanism)
+  against an alternative. Whether S001's own confirmation logic —
+  separately from the Liquidity Pool feature it consumes — could be
+  improved (e.g., the round-number-discrimination effect in D8) is an
+  open question for a future, separately-pre-registered S001
+  re-certification sprint, not addressed here.
 
 ---
 
