@@ -262,6 +262,121 @@ modified by any sprint in this series**.
 
 ---
 
+## E. CVD/Delta Module — Audit and Signal-Value Research — CLOSED
+
+**Status: production decisions confirmed below.** Closes two completed
+sprints: `docs/cvd_delta_module_logic_audit.md` (correctness audit) and
+`docs/cvd_delta_signal_value_train_report.md` (TRAIN signal-value
+research, frozen protocol SHA-256
+`f2cb19b1841f02bb8bce1c15f4d28d3b0cd0bb38a93462edd4e17150be5034b8`,
+verified unchanged through this closure). Both reports' original text
+and frozen verdicts are **preserved unmodified** — this section adds
+closure and interpretive context, it does not restate or re-derive
+their findings.
+
+### Confirmed production decisions
+
+- **E1. No current CVD/Delta field met the signal-value sprint's own
+  promotion criteria.** `cvd_direction`, `price_cvd_divergence_flag`,
+  `cvd_exhaustion_flag`, and `delta_direction` were each tested as a
+  separate hypothesis on real SOL TRAIN data; none reached
+  `PROMOTE TO VALIDATION`. Verdicts (report Section 10): `cvd_direction`
+  INCONCLUSIVE (S007 sample too small; the larger, initially-promising
+  S001-candidate-pool effect failed its own required secondary-endpoint
+  and source-redundancy checks), `price_cvd_divergence_flag`
+  INCONCLUSIVE (numerically concerning direction, but n=47 with a
+  month-clustered CI half-width of ±28.9 points — too unstable for any
+  conclusion), `cvd_exhaustion_flag` INCONCLUSIVE (n=7, below the
+  sprint's own 30-observation sample gate), `delta_direction`
+  RETAIN AS METADATA (calculated correctly per the audit; no
+  directional value found).
+- **E2. No production demotion is justified by the available
+  evidence.** Both currently-gating S001 fields
+  (`price_cvd_divergence_flag`, `cvd_exhaustion_flag`) returned
+  INCONCLUSIVE, not a confirmed negative result — the sprint's own
+  statistical discipline explicitly treats "insufficient/unstable
+  sample" as distinct from "demonstrated no value," and applies that
+  distinction symmetrically to promotion and demotion decisions.
+- **E3. Current production behavior remains unchanged.**
+  `strategy/features/delta.py`, `strategy/features/cvd.py`,
+  `strategy/setups/liquidity_sweep_reversal.py`, and
+  `strategy/setups/trend_continuation_confluence.py` were read-only
+  throughout both sprints — confirmed directly (git diff against the
+  closure checkpoint shows zero changes to any file outside
+  `strategy/research/`, `tests/`, and `docs/`).
+- **E4. Signal calculation correctness and trading usefulness are
+  separate, independently-established conclusions.** The audit
+  (`cvd_delta_module_logic_audit.md`) found the Delta formula, unit
+  handling, 1m→15m aggregation, replay-safety, and divergence/exhaustion
+  timing all **correct** — a code/data-integrity finding. The
+  signal-value sprint separately found no field's **directional value**
+  established at TRAIN sample sizes — an entirely different question,
+  answered independently. Neither finding implies the other; a
+  correctly-calculated field can still carry no decision-relevant
+  information, and this register records both conclusions as distinct
+  facts rather than collapsing them into one "CVD is/isn't good" verdict.
+- **E5. Session-reset (session-anchored CVD) research remains
+  deferred**, per the signal-value report's own Section 11: no field
+  established value for a reset mechanism to improve, and the one
+  near-miss (`cvd_direction`) failed for a reason (source concentration)
+  a reset would not address. Not revisited until a future sprint
+  establishes a genuinely useful, redundancy-surviving field.
+
+### Recorded limitations (from the signal-value report, restated for register visibility)
+
+- **Sample-size**: `price_cvd_divergence_flag` CONFIRMS n=47,
+  `cvd_exhaustion_flag` CONFIRMS n=7, S007's entire candidate pool n=25
+  — all below or at the edge of the sprint's own 30-observation gate.
+- **Source-dependence**: `cvd_direction`'s pooled 6.4-point gap was
+  concentrated entirely in round-number-sourced pools (+16.2pp there vs.
+  −0.5pp elsewhere).
+- **Endpoint dependence**: `cvd_direction`'s primary-endpoint
+  (`+1/−1 ATR`) gap did not replicate at the secondary endpoint
+  (`+2/−1 ATR`: 33.02% vs. 33.74%, essentially flat).
+
+### Interpretive clarifications (this closure, not a reopening of the frozen verdicts)
+
+These qualify how the above findings should and should not be read.
+They do not change any verdict in the original report.
+
+- **A source-specific effect is not automatically an artifact — it may
+  be a conditional hypothesis.** `cvd_direction`'s effect being confined
+  to round-number-sourced pools was classified `Insufficient evidence`
+  for a *general* incremental effect (correct, since the original,
+  unconditional hypothesis as tested did not hold across the whole
+  population) — but this is not evidence that a *narrower*, explicitly
+  conditional hypothesis ("does `cvd_direction` add value specifically
+  at round-number-sourced S001 candidates?") is false. That narrower
+  question was not pre-registered or tested as its own hypothesis this
+  sprint, and remains open, not rejected.
+- **Failure at the +2 ATR secondary endpoint limits the claim the +1 ATR
+  primary result can support — it does not erase the primary result.**
+  The primary-endpoint gap (6.44pp, positive in 4/4 months) is a real,
+  measured pattern in the TRAIN data. Its failure to replicate at a
+  larger favorable-move threshold means the evidence cannot support a
+  claim of a robust, magnitude-scalable effect — but the primary-endpoint
+  measurement itself stands as reported, unretracted.
+- **Worse total P&L with many more trades does not, by itself, prove
+  better filtering.** The S001 ablation (Section 8 of the signal-value
+  report) found removing the CVD gate multiplies trade count ~7.5×
+  while total net P&L worsens roughly proportionally (both control and
+  neutral have per-trade expectancy within about $1 of each other,
+  −$11.03 vs. −$12.10). The *aggregate* P&L difference is arithmetic
+  (more losing-expectancy trades sum to a larger loss) and was never
+  used alone in the report to argue the gate adds value — the report's
+  own basis for any (weak, inconclusive) support of the gate was the
+  per-trade SHARED-vs-NEUTRAL-ONLY comparison (37.5% vs. 34.8% win
+  rate), explicitly flagged there as within noise at this sample size.
+  Recorded here to preempt a future reader citing the aggregate P&L gap
+  alone as if it were the evidence.
+- **Failure to establish value does not prove a feature is useless.**
+  Every `INCONCLUSIVE` verdict in E1 reflects "not enough evidence to
+  conclude either way," not "shown to add nothing." Treat these fields
+  as genuinely open questions for a better-powered future sprint, not
+  as settled negatives.
+
+---
+
 ## Architectural preservation rule (guidance for a future sprint, not authorized now)
 
 Per direction: any future correction to the persistent-vs-event-based BOS/CHoCH question (B5) must be **additive**, not a replacement:
